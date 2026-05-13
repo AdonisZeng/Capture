@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QSize>
 #include <QImage>
+#include <QThread>
 #include <windows.h>
 #include <mfapi.h>
 #include <mfidl.h>
@@ -51,12 +52,16 @@ private:
     HWND m_targetHwnd;
     bool m_fullScreen;
     QRect m_captureRegion;
+    QThread* m_captureThread;
 
     ID3D11Device* m_d3dDevice;
     ID3D11DeviceContext* m_d3dContext;
     IDXGIOutputDuplication* m_duplication;
     IDXGIFactory2* m_dxgiFactory;
     QList<IDXGIAdapter*> m_adapters;
+
+private slots:
+    void captureLoop();
 };
 
 #endif

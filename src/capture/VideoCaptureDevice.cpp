@@ -10,6 +10,8 @@
 #include <DXGIDebug.h>
 #include <QDebug>
 #include <QMutex>
+#include <QDateTime>
+#include <QThread>
 #include <wingdi.h>
 
 #ifdef _MSC_VER
@@ -30,12 +32,19 @@ VideoCaptureDevice::VideoCaptureDevice(QObject* parent)
     , m_d3dContext(nullptr)
     , m_duplication(nullptr)
     , m_dxgiFactory(nullptr)
+    , m_captureThread(nullptr)
 {
 }
 
 VideoCaptureDevice::~VideoCaptureDevice()
 {
     stopCapture();
+
+    if (m_captureThread) {
+        m_captureThread->quit();
+        m_captureThread->wait(2000);
+        m_captureThread = nullptr;
+    }
 
     if (m_duplication) {
         m_duplication->Release();
@@ -413,6 +422,59 @@ QImage VideoCaptureDevice::convertToImage(ID3D11Texture2D* texture)
     return image;
 }
 
+void VideoCaptureDevice::captureLoop()
+{
+    qDebug() << "Video capture loop started";
+    qint64 frameInterval = 1000 / 60;
+
+    while (m_isCapturing) {
+        if (!m_duplication) {
+            break;
+        }
+
+        DXGI_OUTDUPL_FRAME_INFO frameInfo;
+        IDXGIResource* resource = nullptr;
+        HRESULT hr = m_duplication->AcquireNextFrame(500, &frameInfo, &resource);
+
+        if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
+            continue;
+        }
+
+        if (FAILED(hr)) {
+            qWarning() << "AcquireNextFrame failed:" << hr;
+            QThread::msleep(frameInterval);
+            continue;
+        }
+
+        if (frameInfo.LastPresentTime.QuadPart == 0) {
+            m_duplication->ReleaseFrame();
+            continue;
+        }
+
+        ID3D11Texture2D* texture = nullptr;
+        hr = resource->QueryInterface(IID_PPV_ARGS(&texture));
+        resource->Release();
+
+        if (FAILED(hr) || !texture) {
+            m_duplication->ReleaseFrame();
+            continue;
+        }
+
+        QImage image = convertToImage(texture);
+        texture->Release();
+
+        if (!image.isNull()) {
+            qint64 timestamp = QDateTime::currentMSecsSinceEpoch();
+            emit frameCaptured(image, timestamp);
+        }
+
+        m_duplication->ReleaseFrame();
+        QThread::msleep(frameInterval);
+    }
+
+    qDebug() << "Video capture loop ended";
+}
+
 bool VideoCaptureDevice::startCapture(HWND hwnd, bool fullScreen)
 {
     if (m_isCapturing) {
@@ -455,7 +517,12 @@ bool VideoCaptureDevice::startCapture(HWND hwnd, bool fullScreen)
         m_captureSize = QSize(1920, 1080);
     }
 
+    m_captureThread = new QThread(this);
+    connect(m_captureThread, &QThread::started, this, &VideoCaptureDevice::captureLoop);
+    connect(m_captureThread, &QThread::finished, m_captureThread, &QThread::deleteLater);
+
     m_isCapturing = true;
+    m_captureThread->start();
     qDebug() << "Capture started:" << m_captureSize << "fullScreen:" << fullScreen;
     return true;
 }
@@ -496,6 +563,12 @@ bool VideoCaptureDevice::startCaptureRegion(const QRect& region)
 void VideoCaptureDevice::stopCapture()
 {
     m_isCapturing = false;
+
+    if (m_captureThread && m_captureThread->isRunning()) {
+        m_captureThread->quit();
+        m_captureThread->wait(2000);
+        m_captureThread = nullptr;
+    }
 
     if (m_duplication) {
         m_duplication->Release();

@@ -1,5 +1,7 @@
 #include "AudioCaptureDevice.h"
 #include <QDebug>
+#include <QDateTime>
+#include <QThread>
 #include <combaseapi.h>
 #include <functiondiscoverykeys.h>
 
@@ -23,6 +25,7 @@ AudioCaptureDevice::AudioCaptureDevice(QObject* parent)
     , m_sampleRate(48000)
     , m_channels(2)
     , m_bitsPerSample(16)
+    , m_captureThread(nullptr)
 {
 }
 
@@ -404,12 +407,24 @@ bool AudioCaptureDevice::startCapture(bool systemAudio, bool microphone)
     m_mixedBuffer.reserve(48000 * frameSize);
 
     m_isCapturing = true;
+
+    m_captureThread = new QThread(this);
+    connect(m_captureThread, &QThread::started, this, &AudioCaptureDevice::captureLoop);
+    connect(m_captureThread, &QThread::finished, m_captureThread, &QThread::deleteLater);
+    m_captureThread->start();
+
     return true;
 }
 
 void AudioCaptureDevice::stopCapture()
 {
     m_isCapturing = false;
+
+    if (m_captureThread && m_captureThread->isRunning()) {
+        m_captureThread->quit();
+        m_captureThread->wait(2000);
+        m_captureThread = nullptr;
+    }
 
     if (m_systemAudioClient) {
         m_systemAudioClient->Stop();
@@ -514,4 +529,71 @@ QByteArray AudioCaptureDevice::getMixedSamples() const
 {
     QMutexLocker locker(&m_bufferMutex);
     return m_mixedBuffer;
+}
+
+void AudioCaptureDevice::captureLoop()
+{
+    qDebug() << "Audio capture loop started";
+    const int bufferDurationMs = 100;
+    int bytesPerSample = m_bitsPerSample / 8;
+    int frameSize = m_channels * bytesPerSample;
+    int framesPerBuffer = (m_sampleRate * bufferDurationMs) / 1000;
+
+    while (m_isCapturing) {
+        if (m_systemAudioEnabled && m_systemCaptureClient) {
+            BYTE* pData = nullptr;
+            UINT32 numFrames = 0;
+            DWORD flags = 0;
+
+            HRESULT hr = m_systemCaptureClient->GetBuffer(
+                &pData, &numFrames, &flags, nullptr, nullptr);
+
+            if (SUCCEEDED(hr)) {
+                QMutexLocker locker(&m_bufferMutex);
+                m_mixedBuffer.append(reinterpret_cast<const char*>(pData),
+                                     numFrames * frameSize);
+                m_systemCaptureClient->ReleaseBuffer(numFrames);
+            }
+        }
+
+        if (m_microphoneEnabled && m_micCaptureClient) {
+            BYTE* pData = nullptr;
+            UINT32 numFrames = 0;
+            DWORD flags = 0;
+
+            HRESULT hr = m_micCaptureClient->GetBuffer(
+                &pData, &numFrames, &flags, nullptr, nullptr);
+
+            if (SUCCEEDED(hr)) {
+                QMutexLocker locker(&m_bufferMutex);
+                m_mixedBuffer.append(reinterpret_cast<const char*>(pData),
+                                     numFrames * frameSize);
+                m_micCaptureClient->ReleaseBuffer(numFrames);
+            }
+        }
+
+        if (m_mixedBuffer.size() >= framesPerBuffer * frameSize * 10) {
+            QByteArray dataToEmit;
+            {
+                QMutexLocker locker(&m_bufferMutex);
+                dataToEmit = m_mixedBuffer;
+                m_mixedBuffer.clear();
+            }
+            if (!dataToEmit.isEmpty()) {
+                qint64 timestamp = QDateTime::currentMSecsSinceEpoch();
+                emit audioCaptured(dataToEmit, timestamp);
+            }
+        }
+
+        QThread::msleep(bufferDurationMs);
+    }
+
+    if (!m_mixedBuffer.isEmpty()) {
+        qint64 timestamp = QDateTime::currentMSecsSinceEpoch();
+        emit audioCaptured(m_mixedBuffer, timestamp);
+        QMutexLocker locker(&m_bufferMutex);
+        m_mixedBuffer.clear();
+    }
+
+    qDebug() << "Audio capture loop ended";
 }

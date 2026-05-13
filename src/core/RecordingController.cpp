@@ -217,7 +217,7 @@ void RecordingController::updateStatus()
 
 bool RecordingController::setupEncoders()
 {
-    if (!m_videoEncoder || !m_audioCapture) {
+    if (!m_videoEncoder || !m_audioEncoder) {
         return false;
     }
 
@@ -226,10 +226,6 @@ bool RecordingController::setupEncoders()
     AudioSettings audioSettings = settings->audioSettings();
 
     QSize captureSize = m_videoCapture->captureSize();
-    if (captureSize.width() <= 0 || captureSize.height() <= 0) {
-        captureSize = QSize(videoSettings.width, videoSettings.height);
-    }
-
     if (videoSettings.width > 0 && videoSettings.height > 0) {
         captureSize = QSize(videoSettings.width, videoSettings.height);
     }
@@ -278,10 +274,6 @@ bool RecordingController::setupMp4Writer(const QString& filePath)
     AudioSettings audioSettings = settings->audioSettings();
 
     QSize captureSize = m_videoCapture->captureSize();
-    if (captureSize.width() <= 0 || captureSize.height() <= 0) {
-        captureSize = QSize(videoSettings.width, videoSettings.height);
-    }
-
     if (videoSettings.width > 0 && videoSettings.height > 0) {
         captureSize = QSize(videoSettings.width, videoSettings.height);
     }

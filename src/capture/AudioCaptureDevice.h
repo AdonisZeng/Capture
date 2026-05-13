@@ -6,6 +6,7 @@
 #include <QString>
 #include <QMutex>
 #include <QByteArray>
+#include <QThread>
 #include <windows.h>
 #include <mmdeviceapi.h>
 #include <Audioclient.h>
@@ -138,6 +139,10 @@ private:
     int m_sampleRate;                          ///< 采样率
     int m_channels;                            ///< 通道数
     int m_bitsPerSample;                       ///< 位深度
+    QThread* m_captureThread;                  ///< 捕获线程
+
+private slots:
+    void captureLoop();
 };
 
 #endif
