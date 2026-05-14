@@ -17,6 +17,7 @@
 #include "encoding/EncoderFactory.h"
 #include "ui/HotkeyCaptureLineEdit.h"
 #include "config/HotkeyManager.h"
+#include "ui/ScreenshotOptionsDialog.h"
 
 /**
  * @class MainWindow

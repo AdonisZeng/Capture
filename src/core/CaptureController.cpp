@@ -180,3 +180,30 @@ bool CaptureController::saveImage(const QImage& image, const QString& filePath)
 
     return true;
 }
+
+QImage CaptureController::captureFullScreenOnly()
+{
+    HWND desktopHwnd = GetDesktopWindow();
+    RECT desktopRect;
+    GetWindowRect(desktopHwnd, &desktopRect);
+
+    QRect region(0, 0, desktopRect.right - desktopRect.left, desktopRect.bottom - desktopRect.top);
+    return captureScreenInternal(desktopHwnd, region);
+}
+
+QImage CaptureController::captureRegionOnly(const QRect& region)
+{
+    HWND desktopHwnd = GetDesktopWindow();
+    return captureScreenInternal(desktopHwnd, region);
+}
+
+QImage CaptureController::captureWindowOnly(HWND hwnd)
+{
+    if (!hwnd || !IsWindow(hwnd)) {
+        return QImage();
+    }
+
+    RECT windowRect;
+    GetWindowRect(hwnd, &windowRect);
+    return captureScreenInternal(hwnd, QRect(0, 0, windowRect.right - windowRect.left, windowRect.bottom - windowRect.top));
+}

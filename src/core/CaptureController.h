@@ -18,12 +18,18 @@ public:
     bool captureWindow(HWND hwnd, const QString& savePath);
     bool captureRegion(const QRect& region, const QString& savePath);
 
+    QImage captureFullScreenOnly();
+    QImage captureRegionOnly(const QRect& region);
+    QImage captureWindowOnly(HWND hwnd);
+
 signals:
     void captureCompleted(const QString& filePath);
     void captureFailed(const QString& error);
 
 private:
     QImage captureScreenInternal(HWND hwnd, const QRect& region);
+
+public:
     bool saveImage(const QImage& image, const QString& filePath);
 
 private:

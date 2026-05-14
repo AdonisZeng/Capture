@@ -811,24 +811,50 @@ void MainWindow::onFullScreenCaptureClicked()
     Logger::instance()->info("MainWindow", "Fullscreen capture started");
     m_labelScreenshotStatus->setText(QString::fromUtf8("正在截取全屏..."));
 
+    QImage image = m_captureController->captureFullScreenOnly();
+
+    if (image.isNull())
+    {
+        Logger::instance()->error("MainWindow", "Fullscreen capture failed");
+        m_labelScreenshotStatus->setText(QString::fromUtf8("截屏失败"));
+        QMessageBox::critical(this, QString::fromUtf8("错误"), QString::fromUtf8("截屏失败"));
+        return;
+    }
+
+    this->showNormal();
+    this->activateWindow();
+
+    ScreenshotOptionsDialog dialog(image, this);
+    dialog.exec();
+
     QString savePath = getScreenshotSavePath();
     QDateTime dateTime = QDateTime::currentDateTime();
     QString fileName = QString::fromUtf8("Screenshot_%1.png").arg(dateTime.toString(QString::fromUtf8("yyyyMMdd_HHmmss")));
     QString fullPath = savePath + QString::fromUtf8("/") + fileName;
 
-    bool success = m_captureController->captureFullScreen(fullPath);
-
-    if (success)
+    switch (dialog.getSelectedAction())
     {
-        Logger::instance()->info("MainWindow", QString("Fullscreen capture saved: %1").arg(fullPath));
-        m_labelScreenshotStatus->setText(QString::fromUtf8("截屏已保存"));
-        QMessageBox::information(this, QString::fromUtf8("提示"), QString::fromUtf8("截图已保存到: %1").arg(fullPath));
-    }
-    else
-    {
-        Logger::instance()->error("MainWindow", "Fullscreen capture failed");
-        m_labelScreenshotStatus->setText(QString::fromUtf8("截屏失败"));
-        QMessageBox::critical(this, QString::fromUtf8("错误"), QString::fromUtf8("截屏失败"));
+    case ScreenshotOptionsDialog::Copy:
+        m_labelScreenshotStatus->setText(QString::fromUtf8("已复制到剪贴板"));
+        break;
+    case ScreenshotOptionsDialog::Save:
+        if (m_captureController->saveImage(image, fullPath))
+        {
+            Logger::instance()->info("MainWindow", QString("Fullscreen capture saved: %1").arg(fullPath));
+            m_labelScreenshotStatus->setText(QString::fromUtf8("截屏已保存"));
+        }
+        else
+        {
+            m_labelScreenshotStatus->setText(QString::fromUtf8("保存失败"));
+            QMessageBox::critical(this, QString::fromUtf8("错误"), QString::fromUtf8("保存截屏失败"));
+        }
+        break;
+    case ScreenshotOptionsDialog::SaveAs:
+        m_labelScreenshotStatus->setText(QString::fromUtf8("请选择保存位置"));
+        break;
+    default:
+        m_labelScreenshotStatus->setText(QString::fromUtf8("已取消"));
+        break;
     }
 }
 
@@ -842,25 +868,48 @@ void MainWindow::onRegionCaptureClicked()
 
 void MainWindow::onRegionSelected(const QRect& region)
 {
+    QImage image = m_captureController->captureRegionOnly(region);
+
+    this->showNormal();
+    this->activateWindow();
+
+    if (image.isNull())
+    {
+        m_labelScreenshotStatus->setText(QString::fromUtf8("截屏失败"));
+        QMessageBox::critical(this, QString::fromUtf8("错误"), QString::fromUtf8("区域截屏失败"));
+        return;
+    }
+
+    ScreenshotOptionsDialog dialog(image, this);
+    dialog.exec();
+
     QString savePath = getScreenshotSavePath();
     QDateTime dateTime = QDateTime::currentDateTime();
     QString fileName = QString::fromUtf8("Screenshot_%1.png").arg(dateTime.toString(QString::fromUtf8("yyyyMMdd_HHmmss")));
     QString fullPath = savePath + QString::fromUtf8("/") + fileName;
 
-    bool success = m_captureController->captureRegion(region, fullPath);
-
-    this->showNormal();
-    this->activateWindow();
-
-    if (success)
+    switch (dialog.getSelectedAction())
     {
-        m_labelScreenshotStatus->setText(QString::fromUtf8("截屏已保存"));
-        QMessageBox::information(this, QString::fromUtf8("提示"), QString::fromUtf8("区域截图已保存到: %1").arg(fullPath));
-    }
-    else
-    {
-        m_labelScreenshotStatus->setText(QString::fromUtf8("截屏失败"));
-        QMessageBox::critical(this, QString::fromUtf8("错误"), QString::fromUtf8("区域截屏失败"));
+    case ScreenshotOptionsDialog::Copy:
+        m_labelScreenshotStatus->setText(QString::fromUtf8("已复制到剪贴板"));
+        break;
+    case ScreenshotOptionsDialog::Save:
+        if (m_captureController->saveImage(image, fullPath))
+        {
+            m_labelScreenshotStatus->setText(QString::fromUtf8("截屏已保存"));
+        }
+        else
+        {
+            m_labelScreenshotStatus->setText(QString::fromUtf8("保存失败"));
+            QMessageBox::critical(this, QString::fromUtf8("错误"), QString::fromUtf8("保存截屏失败"));
+        }
+        break;
+    case ScreenshotOptionsDialog::SaveAs:
+        m_labelScreenshotStatus->setText(QString::fromUtf8("请选择保存位置"));
+        break;
+    default:
+        m_labelScreenshotStatus->setText(QString::fromUtf8("已取消"));
+        break;
     }
 }
 

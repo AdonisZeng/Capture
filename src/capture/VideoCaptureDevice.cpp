@@ -29,11 +29,12 @@ VideoCaptureDevice::VideoCaptureDevice(QObject* parent)
     , m_isCapturing(false)
     , m_targetHwnd(nullptr)
     , m_fullScreen(false)
+    , m_captureRegion()
+    , m_captureThread(nullptr)
     , m_d3dDevice(nullptr)
     , m_d3dContext(nullptr)
     , m_duplication(nullptr)
     , m_dxgiFactory(nullptr)
-    , m_captureThread(nullptr)
 {
 }
 
