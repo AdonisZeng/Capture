@@ -65,6 +65,8 @@ add_executable(Capture WIN32
     src/ui/HotkeyCaptureLineEdit.h
     src/ui/MainWindow.cpp
     src/ui/MainWindow.h
+    src/utils/Logger.h
+    src/utils/Logger.cpp
     resources/app.rc
 )
 

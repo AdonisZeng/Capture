@@ -41,6 +41,10 @@ struct GeneralSettings {
     QString screenshotPath;     ///< 截屏保存路径
 };
 
+struct LogSettings {
+    bool enabled;               ///< 日志总开关
+};
+
 class SettingsManager : public QObject
 {
     Q_OBJECT
@@ -55,6 +59,9 @@ public:
 
     GeneralSettings generalSettings() const;
     void setGeneralSettings(const GeneralSettings& settings);
+
+    LogSettings logSettings() const;
+    void setLogSettings(const LogSettings& settings);
 
     QString screenshotHotkey() const;
     void setScreenshotHotkey(const QString& hotkey);

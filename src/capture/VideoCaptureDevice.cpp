@@ -6,6 +6,7 @@
  */
 
 #include "VideoCaptureDevice.h"
+#include "utils/Logger.h"
 #include <d3d11.h>
 #include <DXGIDebug.h>
 #include <QDebug>
@@ -424,6 +425,7 @@ QImage VideoCaptureDevice::convertToImage(ID3D11Texture2D* texture)
 
 void VideoCaptureDevice::captureLoop()
 {
+    Logger::instance()->info("VideoCaptureDevice", "Capture loop started");
     qDebug() << "Video capture loop started";
     qint64 frameInterval = 1000 / 60;
 
@@ -473,10 +475,12 @@ void VideoCaptureDevice::captureLoop()
     }
 
     qDebug() << "Video capture loop ended";
+    Logger::instance()->info("VideoCaptureDevice", "Capture loop ended");
 }
 
 bool VideoCaptureDevice::startCapture(HWND hwnd, bool fullScreen)
 {
+    Logger::instance()->info("VideoCaptureDevice", QString("Starting capture: fullScreen=%1").arg(fullScreen));
     if (m_isCapturing) {
         stopCapture();
     }
@@ -562,6 +566,7 @@ bool VideoCaptureDevice::startCaptureRegion(const QRect& region)
 
 void VideoCaptureDevice::stopCapture()
 {
+    Logger::instance()->info("VideoCaptureDevice", "Stopping capture");
     m_isCapturing = false;
 
     if (m_captureThread && m_captureThread->isRunning()) {

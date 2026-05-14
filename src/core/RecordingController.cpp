@@ -6,6 +6,7 @@
 
 #include "RecordingController.h"
 #include "config/SettingsManager.h"
+#include "utils/Logger.h"
 #include <QDebug>
 #include <QDateTime>
 #include <QImage>
@@ -39,10 +40,13 @@ bool RecordingController::startRecording(HWND hwnd, bool fullScreen, const QStri
 {
     if (m_isRecording) {
         qWarning() << "Recording is already in progress";
+        Logger::instance()->warning("RecordingController", "Recording is already in progress");
         return false;
     }
 
     cleanup();
+
+    Logger::instance()->info("RecordingController", QString("Starting recording: fullScreen=%1").arg(fullScreen));
 
     m_videoCapture = new VideoCaptureDevice(this);
     m_audioCapture = new AudioCaptureDevice(this);
@@ -52,15 +56,19 @@ bool RecordingController::startRecording(HWND hwnd, bool fullScreen, const QStri
 
     if (!m_videoCapture->initialize()) {
         emit recordingError("Failed to initialize video capture device");
+        Logger::instance()->error("RecordingController", "Failed to initialize video capture device");
         cleanup();
         return false;
     }
+    Logger::instance()->info("RecordingController", "Video capture initialized");
 
     if (!m_audioCapture->initialize()) {
         emit recordingError("Failed to initialize audio capture device");
+        Logger::instance()->error("RecordingController", "Failed to initialize audio capture device");
         cleanup();
         return false;
     }
+    Logger::instance()->info("RecordingController", "Audio capture initialized");
 
     QString filePath = savePath;
     if (filePath.isEmpty()) {
@@ -71,15 +79,19 @@ bool RecordingController::startRecording(HWND hwnd, bool fullScreen, const QStri
 
     if (!setupMp4Writer(filePath)) {
         emit recordingError("Failed to setup MP4 writer");
+        Logger::instance()->error("RecordingController", "Failed to setup MP4 writer");
         cleanup();
         return false;
     }
+    Logger::instance()->info("RecordingController", QString("MP4 writer setup: %1").arg(filePath));
 
     if (!setupEncoders()) {
         emit recordingError("Failed to setup encoders");
+        Logger::instance()->error("RecordingController", "Failed to setup encoders");
         cleanup();
         return false;
     }
+    Logger::instance()->info("RecordingController", "Encoders setup completed");
 
     connect(m_videoCapture, &VideoCaptureDevice::frameCaptured,
             this, &RecordingController::onVideoFrameCaptured);
@@ -99,15 +111,19 @@ bool RecordingController::startRecording(HWND hwnd, bool fullScreen, const QStri
 
     if (!captureStarted) {
         emit recordingError("Failed to start video capture");
+        Logger::instance()->error("RecordingController", "Failed to start video capture");
         cleanup();
         return false;
     }
+    Logger::instance()->info("RecordingController", "Video capture started");
 
     if (!m_audioCapture->startCapture(true, false)) {
         emit recordingError("Failed to start audio capture");
+        Logger::instance()->error("RecordingController", "Failed to start audio capture");
         cleanup();
         return false;
     }
+    Logger::instance()->info("RecordingController", "Audio capture started");
 
     m_statusTimer = new QTimer(this);
     connect(m_statusTimer, &QTimer::timeout, this, &RecordingController::updateStatus);
@@ -120,6 +136,7 @@ bool RecordingController::startRecording(HWND hwnd, bool fullScreen, const QStri
     m_isRecording = true;
     m_currentFilePath = filePath;
 
+    Logger::instance()->info("RecordingController", QString("Recording started: %1").arg(filePath));
     emit recordingStarted();
     return true;
 }
@@ -129,6 +146,9 @@ void RecordingController::stopRecording()
     if (!m_isRecording) {
         return;
     }
+
+    Logger::instance()->info("RecordingController", QString("Recording stopped: frames=%1, audioSamples=%2, duration=%3ms")
+                                .arg(m_frameCount).arg(m_audioCount).arg(m_duration));
 
     m_isRecording = false;
 

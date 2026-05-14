@@ -1,4 +1,5 @@
 #include "AudioCaptureDevice.h"
+#include "utils/Logger.h"
 #include <QDebug>
 #include <QDateTime>
 #include <QThread>
@@ -365,6 +366,9 @@ bool AudioCaptureDevice::startCapture(bool systemAudio, bool microphone)
         stopCapture();
     }
 
+    Logger::instance()->info("AudioCaptureDevice", QString("Starting capture: systemAudio=%1, microphone=%2")
+                                  .arg(systemAudio).arg(microphone));
+
     m_systemAudioEnabled = systemAudio;
     m_microphoneEnabled = microphone;
 
@@ -418,6 +422,7 @@ bool AudioCaptureDevice::startCapture(bool systemAudio, bool microphone)
 
 void AudioCaptureDevice::stopCapture()
 {
+    Logger::instance()->info("AudioCaptureDevice", "Stopping capture");
     m_isCapturing = false;
 
     if (m_captureThread && m_captureThread->isRunning()) {
@@ -533,6 +538,7 @@ QByteArray AudioCaptureDevice::getMixedSamples() const
 
 void AudioCaptureDevice::captureLoop()
 {
+    Logger::instance()->info("AudioCaptureDevice", "Capture loop started");
     qDebug() << "Audio capture loop started";
     const int bufferDurationMs = 100;
     int bytesPerSample = m_bitsPerSample / 8;
@@ -596,4 +602,5 @@ void AudioCaptureDevice::captureLoop()
     }
 
     qDebug() << "Audio capture loop ended";
+    Logger::instance()->info("AudioCaptureDevice", "Capture loop ended");
 }

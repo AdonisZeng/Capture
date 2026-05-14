@@ -6,6 +6,7 @@
 #include "ui/MainWindow.h"
 #include "config/SettingsManager.h"
 #include "config/HotkeyManager.h"
+#include "utils/Logger.h"
 
 /**
  * @brief Ӧ�ó�����ڵ�
@@ -40,6 +41,11 @@ int main(int argc, char *argv[])
 
     MainWindow window;
     window.show();
+
+    // 初始化日志系统
+    Logger::instance()->setEnabled(SettingsManager::instance()->logSettings().enabled);
+    Logger::instance()->info("Main", "Application started");
+    Logger::instance()->info("Main", QString("Log file: %1").arg(Logger::instance()->currentLogFilePath()));
 
     return app.exec();
 }

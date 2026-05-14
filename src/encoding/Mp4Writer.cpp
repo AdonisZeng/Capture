@@ -1,4 +1,5 @@
 #include "Mp4Writer.h"
+#include "utils/Logger.h"
 #include <QDebug>
 #include <mferror.h>
 
@@ -92,12 +93,14 @@ bool Mp4Writer::open(const QString& filePath, int width, int height, int frameRa
     }
 
     m_isOpen = true;
+    Logger::instance()->info("Mp4Writer", QString("Opened: %1 (%2x%3 @ %4fps)").arg(filePath).arg(width).arg(height).arg(frameRate));
     return true;
 }
 
 void Mp4Writer::close()
 {
     if (m_sinkWriter != nullptr) {
+        Logger::instance()->info("Mp4Writer", QString("Closing: %1").arg(m_filePath));
         m_sinkWriter->Finalize();
         m_sinkWriter->Release();
         m_sinkWriter = nullptr;

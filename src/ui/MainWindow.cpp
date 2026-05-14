@@ -1,4 +1,5 @@
 ﻿#include "MainWindow.h"
+#include "utils/Logger.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
@@ -646,6 +647,8 @@ void MainWindow::startRecordingHelper(HWND hwnd, bool fullScreen, const QString&
 {
     QString fullPath = generateRecordingFilePath();
 
+    Logger::instance()->info("MainWindow", QString("Starting recording: fullScreen=%1, path=%2").arg(fullScreen).arg(fullPath));
+
     if (m_recordingController->startRecording(hwnd, fullScreen, fullPath))
     {
         m_isRecording = true;
@@ -655,6 +658,7 @@ void MainWindow::startRecordingHelper(HWND hwnd, bool fullScreen, const QString&
     }
     else
     {
+        Logger::instance()->error("MainWindow", QString("Failed to start recording: %1").arg(errorContext));
         QMessageBox::critical(this, QString::fromUtf8("错误"),
             QString::fromUtf8("无法开始%1").arg(errorContext));
     }
@@ -662,6 +666,7 @@ void MainWindow::startRecordingHelper(HWND hwnd, bool fullScreen, const QString&
 
 void MainWindow::onStopRecording()
 {
+    Logger::instance()->info("MainWindow", "Stopping recording");
     m_recordingController->stopRecording();
     m_isRecording = false;
     m_btnStartRecording->setEnabled(true);
@@ -803,6 +808,7 @@ void MainWindow::onOpenSaveDirClicked()
 
 void MainWindow::onFullScreenCaptureClicked()
 {
+    Logger::instance()->info("MainWindow", "Fullscreen capture started");
     m_labelScreenshotStatus->setText(QString::fromUtf8("正在截取全屏..."));
 
     QString savePath = getScreenshotSavePath();
@@ -814,11 +820,13 @@ void MainWindow::onFullScreenCaptureClicked()
 
     if (success)
     {
+        Logger::instance()->info("MainWindow", QString("Fullscreen capture saved: %1").arg(fullPath));
         m_labelScreenshotStatus->setText(QString::fromUtf8("截屏已保存"));
         QMessageBox::information(this, QString::fromUtf8("提示"), QString::fromUtf8("截图已保存到: %1").arg(fullPath));
     }
     else
     {
+        Logger::instance()->error("MainWindow", "Fullscreen capture failed");
         m_labelScreenshotStatus->setText(QString::fromUtf8("截屏失败"));
         QMessageBox::critical(this, QString::fromUtf8("错误"), QString::fromUtf8("截屏失败"));
     }
@@ -826,6 +834,7 @@ void MainWindow::onFullScreenCaptureClicked()
 
 void MainWindow::onRegionCaptureClicked()
 {
+    Logger::instance()->info("MainWindow", "Region capture started");
     m_labelScreenshotStatus->setText(QString::fromUtf8("请在屏幕上选择区域..."));
     this->showMinimized();
     m_regionSelector->startSelection();

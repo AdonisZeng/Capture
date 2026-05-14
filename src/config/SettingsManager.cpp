@@ -92,6 +92,19 @@ void SettingsManager::setGeneralSettings(const GeneralSettings& settings)
     emit settingsChanged();
 }
 
+LogSettings SettingsManager::logSettings() const
+{
+    LogSettings settings;
+    settings.enabled = m_settings->value("logging/enabled", true).toBool();
+    return settings;
+}
+
+void SettingsManager::setLogSettings(const LogSettings& settings)
+{
+    m_settings->setValue("logging/enabled", settings.enabled);
+    emit settingsChanged();
+}
+
 QString SettingsManager::screenshotHotkey() const
 {
     return m_settings->value("hotkeys/screenshot", "Ctrl+Alt+S").toString();
