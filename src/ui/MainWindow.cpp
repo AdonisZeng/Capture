@@ -43,6 +43,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_btnFullScreenCapture(nullptr)
     , m_btnRegionCapture(nullptr)
     , m_labelScreenshotStatus(nullptr)
+    , m_btnOpenScreenshotDir(nullptr)
+    , m_btnOpenRecordingDir(nullptr)
     , m_captureController(nullptr)
     , m_recordingController(nullptr)
     , m_settingsManager(nullptr)
@@ -335,6 +337,9 @@ void MainWindow::setupSettingsTab()
     m_btnBrowseScreenshotPath = new QPushButton(QString::fromUtf8("浏览..."), screenshotPathRow);
     screenshotPathLayout->addWidget(m_btnBrowseScreenshotPath);
 
+    m_btnOpenScreenshotDir = new QPushButton(QString::fromUtf8("打开目录"), screenshotPathRow);
+    screenshotPathLayout->addWidget(m_btnOpenScreenshotDir);
+
     QWidget* recordingPathRow = new QWidget(storageGroup);
     QHBoxLayout* recordingPathLayout = new QHBoxLayout(recordingPathRow);
     recordingPathLayout->setContentsMargins(0, 0, 0, 0);
@@ -348,6 +353,9 @@ void MainWindow::setupSettingsTab()
 
     m_btnBrowseRecordingPath = new QPushButton(QString::fromUtf8("浏览..."), recordingPathRow);
     recordingPathLayout->addWidget(m_btnBrowseRecordingPath);
+
+    m_btnOpenRecordingDir = new QPushButton(QString::fromUtf8("打开目录"), recordingPathRow);
+    recordingPathLayout->addWidget(m_btnOpenRecordingDir);
 
     storageLayout->addWidget(screenshotPathRow);
     storageLayout->addWidget(recordingPathRow);
@@ -427,6 +435,8 @@ void MainWindow::setupConnections()
     connect(m_btnBrowseScreenshotPath, &QPushButton::clicked, this, &MainWindow::onBrowseScreenshotPath);
     connect(m_btnBrowseRecordingPath, &QPushButton::clicked, this, &MainWindow::onBrowseRecordingPath);
     connect(m_btnApplyStoragePaths, &QPushButton::clicked, this, &MainWindow::onApplyStoragePaths);
+    connect(m_btnOpenScreenshotDir, &QPushButton::clicked, this, &MainWindow::onOpenScreenshotDirClicked);
+    connect(m_btnOpenRecordingDir, &QPushButton::clicked, this, &MainWindow::onOpenRecordingDirClicked);
 
     // TrayIconManager signals
     connect(m_trayIconManager, &TrayIconManager::signalScreenshotRequested, this, &MainWindow::onTrayScreenshotRequested);
@@ -516,6 +526,16 @@ void MainWindow::onApplyStoragePaths()
     settings.screenshotPath = m_editScreenshotPath->text();
     settings.savePath = m_editRecordingPath->text();
     m_settingsManager->setGeneralSettings(settings);
+}
+
+void MainWindow::onOpenScreenshotDirClicked()
+{
+    QDesktopServices::openUrl(QUrl::fromLocalFile(getScreenshotSavePath()));
+}
+
+void MainWindow::onOpenRecordingDirClicked()
+{
+    QDesktopServices::openUrl(QUrl::fromLocalFile(getRecordingSavePath()));
 }
 
 void MainWindow::initSettingsValues()

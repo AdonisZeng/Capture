@@ -75,6 +75,8 @@ private slots:
     void onBrowseScreenshotPath();
     void onBrowseRecordingPath();
     void onApplyStoragePaths();
+    void onOpenScreenshotDirClicked();
+    void onOpenRecordingDirClicked();
 
 private:
     void setupUi();
@@ -129,8 +131,10 @@ private:
 
     QLineEdit* m_editScreenshotPath;
     QPushButton* m_btnBrowseScreenshotPath;
+    QPushButton* m_btnOpenScreenshotDir;
     QLineEdit* m_editRecordingPath;
     QPushButton* m_btnBrowseRecordingPath;
+    QPushButton* m_btnOpenRecordingDir;
     QPushButton* m_btnApplyStoragePaths;
 
     CaptureController* m_captureController;

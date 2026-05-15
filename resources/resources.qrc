@@ -1,0 +1,8 @@
+<RCC>
+    <qresource prefix="/styles">
+        <file>styles/dark.css</file>
+    </qresource>
+    <qresource prefix="/icons">
+        <file>icons/Capture.ico</file>
+    </qresource>
+</RCC>
