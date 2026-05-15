@@ -5,12 +5,20 @@
 #include <QCoreApplication>
 #include <QGuiApplication>
 
+const QString TrayIconManager::TYPE_FULLSCREEN = QStringLiteral("fullscreen");
+const QString TrayIconManager::TYPE_REGION = QStringLiteral("region");
+const QString TrayIconManager::TYPE_WINDOW = QStringLiteral("window");
+
 TrayIconManager::TrayIconManager(QObject* parent)
     : QObject(parent)
     , m_trayIcon(nullptr)
     , m_menu(nullptr)
-    , m_actionScreenshot(nullptr)
-    , m_actionRecording(nullptr)
+    , m_actionScreenshotFullscreen(nullptr)
+    , m_actionScreenshotRegion(nullptr)
+    , m_actionRecordingFullscreen(nullptr)
+    , m_actionRecordingWindow(nullptr)
+    , m_menuScreenshot(nullptr)
+    , m_menuRecording(nullptr)
     , m_actionSettings(nullptr)
     , m_actionQuit(nullptr)
     , m_isRecording(false)
@@ -32,17 +40,45 @@ void TrayIconManager::createTrayIcon()
 {
     m_menu = new QMenu();
 
-    m_actionScreenshot = new QAction(tr("截屏(&S)"), m_menu);
-    m_actionScreenshot->setShortcut(QKeySequence(tr("Ctrl+Alt+S")));
-    m_actionScreenshot->setIcon(QIcon::fromTheme("camera-photo", QIcon(":/icons/screenshot.png")));
-    m_menu->addAction(m_actionScreenshot);
-    connect(m_actionScreenshot, &QAction::triggered, this, &TrayIconManager::signalScreenshotRequested);
+    // 截屏子菜单
+    m_menuScreenshot = new QMenu(tr("截屏(&S)"), m_menu);
+    m_menuScreenshot->setIcon(QIcon::fromTheme("camera-photo", QIcon(":/icons/screenshot.png")));
 
-    m_actionRecording = new QAction(tr("录制(&R)"), m_menu);
-    m_actionRecording->setShortcut(QKeySequence(tr("Ctrl+Alt+R")));
-    m_actionRecording->setIcon(QIcon::fromTheme("media-record", QIcon(":/icons/record.png")));
-    m_menu->addAction(m_actionRecording);
-    connect(m_actionRecording, &QAction::triggered, this, &TrayIconManager::signalRecordingRequested);
+    m_actionScreenshotFullscreen = new QAction(tr("全屏截图"), m_menuScreenshot);
+    m_actionScreenshotFullscreen->setData(TYPE_FULLSCREEN);
+    m_menuScreenshot->addAction(m_actionScreenshotFullscreen);
+    connect(m_actionScreenshotFullscreen, &QAction::triggered, this, [this]() {
+        emit signalScreenshotRequested(TYPE_FULLSCREEN);
+    });
+
+    m_actionScreenshotRegion = new QAction(tr("区域截图"), m_menuScreenshot);
+    m_actionScreenshotRegion->setData(TYPE_REGION);
+    m_menuScreenshot->addAction(m_actionScreenshotRegion);
+    connect(m_actionScreenshotRegion, &QAction::triggered, this, [this]() {
+        emit signalScreenshotRequested(TYPE_REGION);
+    });
+
+    m_menu->addMenu(m_menuScreenshot);
+
+    // 录制子菜单
+    m_menuRecording = new QMenu(tr("录制(&R)"), m_menu);
+    m_menuRecording->setIcon(QIcon::fromTheme("media-record", QIcon(":/icons/record.png")));
+
+    m_actionRecordingFullscreen = new QAction(tr("全屏录制"), m_menuRecording);
+    m_actionRecordingFullscreen->setData(TYPE_FULLSCREEN);
+    m_menuRecording->addAction(m_actionRecordingFullscreen);
+    connect(m_actionRecordingFullscreen, &QAction::triggered, this, [this]() {
+        emit signalRecordingRequested(TYPE_FULLSCREEN);
+    });
+
+    m_actionRecordingWindow = new QAction(tr("窗口录制"), m_menuRecording);
+    m_actionRecordingWindow->setData(TYPE_WINDOW);
+    m_menuRecording->addAction(m_actionRecordingWindow);
+    connect(m_actionRecordingWindow, &QAction::triggered, this, [this]() {
+        emit signalRecordingRequested(TYPE_WINDOW);
+    });
+
+    m_menu->addMenu(m_menuRecording);
 
     m_menu->addSeparator();
 
@@ -161,10 +197,10 @@ void TrayIconManager::onIconClicked(QSystemTrayIcon::ActivationReason reason)
             emit signalSettingsRequested();
             break;
         case QSystemTrayIcon::DoubleClick:
-            emit signalScreenshotRequested();
+            emit signalScreenshotRequested(TYPE_FULLSCREEN);
             break;
         case QSystemTrayIcon::MiddleClick:
-            emit signalRecordingRequested();
+            emit signalRecordingRequested(TYPE_FULLSCREEN);
             break;
         default:
             break;

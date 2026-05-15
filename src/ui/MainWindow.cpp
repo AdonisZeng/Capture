@@ -427,6 +427,10 @@ void MainWindow::setupConnections()
     connect(m_btnBrowseScreenshotPath, &QPushButton::clicked, this, &MainWindow::onBrowseScreenshotPath);
     connect(m_btnBrowseRecordingPath, &QPushButton::clicked, this, &MainWindow::onBrowseRecordingPath);
     connect(m_btnApplyStoragePaths, &QPushButton::clicked, this, &MainWindow::onApplyStoragePaths);
+
+    // TrayIconManager signals
+    connect(m_trayIconManager, &TrayIconManager::signalScreenshotRequested, this, &MainWindow::onTrayScreenshotRequested);
+    connect(m_trayIconManager, &TrayIconManager::signalRecordingRequested, this, &MainWindow::onTrayRecordingRequested);
 }
 
 void MainWindow::updateWindowList()
@@ -924,6 +928,26 @@ void MainWindow::onRegionCancelled()
     this->showNormal();
     this->activateWindow();
     m_labelScreenshotStatus->setText(QString::fromUtf8("已取消区域选择"));
+}
+
+void MainWindow::onTrayScreenshotRequested(const QString& type)
+{
+    Logger::instance()->info("MainWindow", QString("Tray screenshot requested: %1").arg(type));
+    if (type == TrayIconManager::TYPE_FULLSCREEN) {
+        onFullScreenCaptureClicked();
+    } else if (type == TrayIconManager::TYPE_REGION) {
+        onRegionCaptureClicked();
+    }
+}
+
+void MainWindow::onTrayRecordingRequested(const QString& type)
+{
+    Logger::instance()->info("MainWindow", QString("Tray recording requested: %1").arg(type));
+    if (type == TrayIconManager::TYPE_FULLSCREEN) {
+        onStartRecordingFullscreen();
+    } else if (type == TrayIconManager::TYPE_WINDOW) {
+        onStartRecordingWindow();
+    }
 }
 
 void MainWindow::onApplyHotkeysClicked()

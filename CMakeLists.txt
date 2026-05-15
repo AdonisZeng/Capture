@@ -70,6 +70,7 @@ add_executable(Capture WIN32
     src/utils/Logger.h
     src/utils/Logger.cpp
     resources/app.rc
+    resources/resources.qrc
 )
 
 target_link_libraries(Capture

@@ -68,6 +68,9 @@ private slots:
     void onRegionSelected(const QRect& region);
     void onRegionCancelled();
 
+    void onTrayScreenshotRequested(const QString& type);
+    void onTrayRecordingRequested(const QString& type);
+
     void onApplyHotkeysClicked();
     void onBrowseScreenshotPath();
     void onBrowseRecordingPath();
