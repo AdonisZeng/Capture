@@ -61,7 +61,6 @@ private slots:
     void onSampleRateChanged(int index);
     void onChannelsChanged(int index);
     void onAudioBitrateChanged(int value);
-    void onOpenSaveDirClicked();
 
     void onFullScreenCaptureClicked();
     void onRegionCaptureClicked();
@@ -123,7 +122,6 @@ private:
     QComboBox* m_comboSampleRate;
     QComboBox* m_comboChannels;
     QSpinBox* m_spinAudioBitrate;
-    QPushButton* m_btnOpenSaveDir;
 
     QPushButton* m_btnFullScreenCapture;
     QPushButton* m_btnRegionCapture;

@@ -39,7 +39,6 @@ MainWindow::MainWindow(QWidget *parent)
     , m_comboSampleRate(nullptr)
     , m_comboChannels(nullptr)
     , m_spinAudioBitrate(nullptr)
-    , m_btnOpenSaveDir(nullptr)
     , m_btnFullScreenCapture(nullptr)
     , m_btnRegionCapture(nullptr)
     , m_labelScreenshotStatus(nullptr)
@@ -239,10 +238,6 @@ void MainWindow::setupRecordingTab()
 
     rightLayout->addStretch();
 
-    m_btnOpenSaveDir = new QPushButton(QString::fromUtf8("打开保存目录"), m_recordingTab);
-    m_btnOpenSaveDir->setMinimumHeight(35);
-    rightLayout->addWidget(m_btnOpenSaveDir);
-
     recordingMainLayout->addLayout(rightLayout, 1);
 }
 
@@ -423,7 +418,6 @@ void MainWindow::setupConnections()
     connect(m_comboSampleRate, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onSampleRateChanged);
     connect(m_comboChannels, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onChannelsChanged);
     connect(m_spinAudioBitrate, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::onAudioBitrateChanged);
-    connect(m_btnOpenSaveDir, &QPushButton::clicked, this, &MainWindow::onOpenSaveDirClicked);
 
     connect(m_btnFullScreenCapture, &QPushButton::clicked, this, &MainWindow::onFullScreenCaptureClicked);
     connect(m_btnRegionCapture, &QPushButton::clicked, this, &MainWindow::onRegionCaptureClicked);
@@ -822,12 +816,6 @@ void MainWindow::onAudioBitrateChanged(int value)
     settings.bitrate = value * 1000;
     m_settingsManager->setAudioSettings(settings);
     m_settingsManager->sync();
-}
-
-void MainWindow::onOpenSaveDirClicked()
-{
-    QString savePath = getDefaultSavePath();
-    QDesktopServices::openUrl(QUrl::fromLocalFile(savePath));
 }
 
 void MainWindow::onFullScreenCaptureClicked()
