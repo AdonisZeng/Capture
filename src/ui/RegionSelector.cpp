@@ -1,4 +1,5 @@
 #include "RegionSelector.h"
+#include "utils/Logger.h"
 #include <QPainter>
 #include <QPen>
 #include <QBrush>
@@ -136,11 +137,13 @@ void RegionSelector::paintEvent(QPaintEvent* event)
 
 void RegionSelector::mousePressEvent(QMouseEvent* event)
 {
+    Logger::instance()->info("RegionSelector", "mousePressEvent called");
     if (event->button() == Qt::LeftButton)
     {
         m_startPoint = event->pos();
         m_endPoint = event->pos();
         m_isSelecting = true;
+        Logger::instance()->info("RegionSelector", QString("Selection started at (%1, %2)").arg(event->pos().x()).arg(event->pos().y()));
         update();
     }
 }
@@ -150,28 +153,36 @@ void RegionSelector::mouseMoveEvent(QMouseEvent* event)
     if (m_isSelecting)
     {
         m_endPoint = event->pos();
+        Logger::instance()->info("RegionSelector", QString("Mouse move to (%1, %2)").arg(event->pos().x()).arg(event->pos().y()));
         update();
     }
 }
 
 void RegionSelector::mouseReleaseEvent(QMouseEvent* event)
 {
+    Logger::instance()->info("RegionSelector", "mouseReleaseEvent called");
     if (event->button() == Qt::LeftButton && m_isSelecting)
     {
         m_isSelecting = false;
         QRect selectedRect = normalizedRect();
+        Logger::instance()->info("RegionSelector", QString("Selection ended: rect=(%1,%2,%3,%4) size=%5x%6")
+            .arg(selectedRect.x()).arg(selectedRect.y())
+            .arg(selectedRect.width()).arg(selectedRect.height())
+            .arg(selectedRect.width()).arg(selectedRect.height()));
 
         // 确保选择的区域有效（宽高都大于0）
+        hide();
         if (selectedRect.width() > 0 && selectedRect.height() > 0)
         {
+            Logger::instance()->info("RegionSelector", "Emitting regionSelected signal");
             emit regionSelected(selectedRect);
+            Logger::instance()->info("RegionSelector", "Signal emitted successfully");
         }
         else
         {
+            Logger::instance()->info("RegionSelector", "Emitting selectionCancelled (invalid rect)");
             emit selectionCancelled();
         }
-
-        hide();
     }
 }
 

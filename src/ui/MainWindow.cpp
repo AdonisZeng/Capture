@@ -53,9 +53,6 @@ MainWindow::MainWindow(QWidget *parent)
 {
     m_availableHwAccel = EncoderFactory::detectAvailableHardwareAccel();
 
-    setupUi();
-    setupConnections();
-
     m_captureController = new CaptureController(this);
     m_recordingController = new RecordingController(this);
     m_settingsManager = SettingsManager::instance();
@@ -63,6 +60,9 @@ MainWindow::MainWindow(QWidget *parent)
     m_windowPicker = new WindowPicker(this);
     m_regionSelector = new RegionSelector(this);
     m_hotkeyManager = new HotkeyManager(this);
+
+    setupUi();
+    setupConnections();
 
     initSettingsValues();
     updateWindowList();
@@ -860,14 +860,19 @@ void MainWindow::onFullScreenCaptureClicked()
 
 void MainWindow::onRegionCaptureClicked()
 {
-    Logger::instance()->info("MainWindow", "Region capture started");
+    Logger::instance()->info("MainWindow", "onRegionCaptureClicked called");
     m_labelScreenshotStatus->setText(QString::fromUtf8("请在屏幕上选择区域..."));
+    Logger::instance()->info("MainWindow", "Calling showMinimized()");
     this->showMinimized();
+    Logger::instance()->info("MainWindow", "Calling startSelection()");
     m_regionSelector->startSelection();
 }
 
 void MainWindow::onRegionSelected(const QRect& region)
 {
+    Logger::instance()->info("MainWindow", QString("onRegionSelected called with region (%1,%2,%3,%4)")
+        .arg(region.x()).arg(region.y()).arg(region.width()).arg(region.height()));
+
     QImage image = m_captureController->captureRegionOnly(region);
 
     this->showNormal();
@@ -915,6 +920,7 @@ void MainWindow::onRegionSelected(const QRect& region)
 
 void MainWindow::onRegionCancelled()
 {
+    Logger::instance()->info("MainWindow", "onRegionCancelled called");
     this->showNormal();
     this->activateWindow();
     m_labelScreenshotStatus->setText(QString::fromUtf8("已取消区域选择"));
