@@ -97,9 +97,9 @@ void TrayIconManager::createTrayIcon()
     m_trayIcon = new QSystemTrayIcon(this);
     m_trayIcon->setContextMenu(m_menu);
 
-    QIcon appIcon = QIcon::fromTheme("camera-video", QIcon(":/icons/app.png"));
+    QIcon appIcon(":/icons/Capture.ico");
     if (appIcon.isNull()) {
-        appIcon = QIcon::fromTheme("video-display", QIcon(":/icons/app.png"));
+        appIcon = QIcon(":/icons/app.png");
     }
     if (appIcon.isNull()) {
         appIcon = QGuiApplication::windowIcon();
@@ -138,9 +138,9 @@ void TrayIconManager::setRecordingState(bool isRecording)
         QPixmap basePixmap(64, 64);
         basePixmap.fill(Qt::transparent);
 
-        QIcon appIcon = QIcon::fromTheme("camera-video", QIcon(":/icons/app.png"));
+        QIcon appIcon(":/icons/Capture.ico");
         if (appIcon.isNull()) {
-            appIcon = QIcon::fromTheme("video-display", QIcon(":/icons/app.png"));
+            appIcon = QIcon(":/icons/app.png");
         }
         if (appIcon.isNull()) {
             appIcon = QGuiApplication::windowIcon();
@@ -165,9 +165,9 @@ void TrayIconManager::setRecordingState(bool isRecording)
 
         icon.addPixmap(basePixmap);
     } else {
-        QIcon appIcon = QIcon::fromTheme("camera-video", QIcon(":/icons/app.png"));
+        QIcon appIcon(":/icons/Capture.ico");
         if (appIcon.isNull()) {
-            appIcon = QIcon::fromTheme("video-display", QIcon(":/icons/app.png"));
+            appIcon = QIcon(":/icons/app.png");
         }
         if (appIcon.isNull()) {
             appIcon = QGuiApplication::windowIcon();
