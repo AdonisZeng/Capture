@@ -43,6 +43,7 @@ Windows 桌面录屏应用：捕获主显示器画面 + 可选的系统声音/�
 | `src/core/autostart.h/.cpp` | 开机自启动：HKCU Run 注册表读写；启用时始终写当前 exe 路径，供启动时自愈 |
 | `src/core/log.h/.cpp` | 日志模块：写入 log/ 目录下按启动时间命名的 TXT，多线程安全 |
 | `src/core/version.h` | **版本号单一真源**（SemVer 三个整数宏 + 字符串宏）。纯宏、无 C++ 语法：Capture.rc 会 include 它，而 RC 预处理器不支持字符串化 |
+| `tools/gen-sha256.ps1` | 构建后生成 sha256sum 格式校验文件。由 Release 两配置的 `PostBuildEvent` 调用，详见「产物命名」节 |
 | `src/core/update.h/.cpp` | 应用内更新：查 GitHub Releases → 下载 exe → SHA-256 校验（BCrypt）→ 自替换替换并重启。网络与磁盘操作全在工作线程，UI 只读状态快照 |
 
 ## 架构与线程模型
@@ -64,6 +65,22 @@ Windows 桌面录屏应用：捕获主显示器画面 + 可选的系统声音/�
 
 - **源文件必须保存为 UTF-8 编码；MSVC 编译必须带 `/utf-8`**（已在 vcxproj 四个配置中配置）。
   历史教训：UTF-8 无 BOM 的中文源文件在默认代码页 936（GBK）下会产生 C4819/C2143/C2001 等编译错误。
+- **`.ps1` 必须存为带 BOM 的 UTF-8**（与上一条同源，解释器侧的版本）：
+  构建事件调的是 `powershell.exe`（Windows PowerShell 5.1），它对无 BOM 的 `.ps1`
+  一律按 ANSI（中文系统=GBK 936）解码，中文注释被解成乱码，其中某些字节序列会连
+  行尾的引号/换行一起吞掉，报的却是**下一行赋值语句的语法错误**，完全不指向真因
+  （实测炸在 `$out = "$full.sha256"` 的收尾引号上）。`tools\gen-sha256.ps1` 里已注明。
+- **构建事件里不能用 `Get-FileHash`**：它由 `Microsoft.PowerShell.Utility` 模块导出，
+  靠模块自动加载，而 MSBuild 的 `PostBuildEvent` 环境里 `PSModulePath` 是坏的，
+  自动加载失败报「无法将"Get-FileHash"项识别为 cmdlet」。构建期脚本一律直接用
+  `System.Security.Cryptography`（只依赖 BCL）。
+- **Release 校验文件由构建生成，不要手工算**：`Capture.vcxproj` 的 Release|Win32 与
+  Release|x64 两个配置在 `PostBuildEvent` 调 `tools\gen-sha256.ps1`，链接完在 exe
+  旁写出 `Capture.exe.sha256`（sha256sum 格式：64 位小写十六进制 + 两个空格 + 文件名 + LF，
+  ASCII 无 BOM）。Debug 两个配置不生成（产物不发布）。脚本失败时非 0 退出，
+  **故意让构建红掉** —— 发布产物缺校验文件正是「应用内更新静默失效」的主因。
+  发布时只需把 exe 与 `.sha256` **成对改名**成 `Capture-<tag>-<arch>.exe[.sha256]`，
+  校验文件内容不用动（`ParseSha256Text` 只取首个 64 位十六进制段，后面的文件名无影响）。
 - 链接依赖：`d3d11.lib;dxgi.lib;d3dcompiler.lib;windowsapp.lib;mfplat.lib;mfreadwrite.lib;mfuuid.lib;ole32.lib;windowscodecs.lib;shell32.lib;comctl32.lib;shlwapi.lib;propsys.lib;winhttp.lib;bcrypt.lib`
   （`propsys.lib` 读设备友好名的 `PropVariant` 接口；`winhttp.lib` + `bcrypt.lib`
   供 `core/update.cpp` 做 HTTPS 与 SHA-256）。
@@ -75,10 +92,20 @@ Windows 桌面录屏应用：捕获主显示器画面 + 可选的系统声音/�
 - 中文 UI 字体：加载 `C:\Windows\Fonts\msyh.ttc`（微软雅黑），失败回退默认字体（否则中文显示为豆腐块）。
 - H.264 要求宽高为偶数，`Recorder::Init` 内自动向下取偶。
 - WGC 回调中的纹理由内部持有，回调外不得长期保存裸指针，需保留自行拷贝。
-- **ImGui 手动布局卡片（ChannelsSplit 自绘背景）没有 WindowPadding**：内容区不是 child，
-  换行后光标退回内容区左缘，第 2 行起文字/控件会紧贴卡片左边界（首行因
-  `SetCursorScreenPos` 显式定位看不出问题，更具迷惑性）。修复：内容开头 `Indent(pad)`、
-  结尾 `Unindent(pad)` 配对；新建卡片应优先用 `PushCardStyle + BeginChild` 让 padding 自动生效。
+- **ImGui 手动布局卡片（ChannelsSplit 自绘背景）左右两侧都没有 WindowPadding**：
+  卡片不是 child，内容直接画在页面 child（`"content"`，`WindowPadding = CardPad`）里。
+  - **左侧**：`Indent(pad)` 修不好「换行后光标退回内容区左缘」的问题——`Indent` 只把光标往右推，
+    第 2 行起文字/控件会紧贴卡片左边界（首行因 `SetCursorScreenPos` 显式定位看不出问题，更具迷惑性）。
+    修复：内容开头 `Indent(pad)`、结尾 `Unindent(pad)` 配对。
+  - **右侧**：`Indent` **完全不管右边界**，而卡片右缘恰好**就是**页面 child 的内容区右缘
+    （卡片 `cardW` 取的就是 `GetContentRegionAvail().x`，两者同源）。故任何按
+    `GetContentRegionAvail().x` 测宽或右对齐的控件（`ToggleRow` 的开关、
+    `SetNextItemWidth(-1.0f)` 的进度条/输入框）在手动布局卡片里会**精确压在卡片描边上**，
+    零留白，且与上方 `BeginChild` 卡片的同名控件明显对不齐。
+    **必须显式扣掉 `Control::CardPad`**：`ToggleRow` 传第四参 `rightInset`，
+    整宽控件写 `-(pad + Control::EdgeInset)`（EdgeInset 另防滚动容器裁剪线削掉描边半像素）。
+  - 结论：**新建卡片一律优先用 `PushCardStyle + BeginChild`**，左右 padding 自动生效，
+    不要为了「高度随内容自适应」而去写手动布局——那正是右侧留白缺失的来源。
 - **ImGui 1.92+ child 样式变化**：`BeginChild` 不传 `ImGuiChildFlags_Borders` 时被视为无边框，
   边框与 WindowPadding 被强制清零，`PushCardStyle` 会整体失效。
 - **枚举型配置值只能追加**：档位值会写进 `settings.json`（如 `RecResolution`）。

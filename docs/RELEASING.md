@@ -6,7 +6,7 @@
 
 ## 0. 前置条件
 
-- 本机工具链在 D 盘（见 `AGNETS.md` 的「本机工具链位置」）
+- 本机工具链在 D 盘（见 `AGENTS.md` 的「本机工具链位置」）
 - 仓库远程指向 GitHub：`git remote -v` 应为 `https://github.com/AdonisZeng/Capture.git`
 - 已登录 `gh` CLI（若用命令行发版）
 
@@ -30,7 +30,7 @@
 ## 2. 更新 CHANGELOG.md
 
 在 `CHANGELOG.md` 顶部加一节，标题写新版本号，正文从本次改动整理。
-仓库里的 `AGNETS.md`「变更记录」是原始素材，但只记功能级变更，粒度比 CHANGELOG 粗。
+仓库里的 `AGENTS.md`「变更记录」是原始素材，但只记功能级变更，粒度比 CHANGELOG 粗。
 
 ## 3. 提交
 
@@ -57,12 +57,18 @@ foreach ($c in 'Release','Debug') { foreach ($p in 'x64','Win32') {
 | Release \| x64 | `x64\Release\Capture.exe` |
 | Release \| Win32 | `Release\Capture.exe` |
 
+**校验文件在链接后自动生成**：Release 两个配置的 `PostBuildEvent` 会调
+`tools\gen-sha256.ps1`，在 exe 旁边写出 `Capture.exe.sha256`（sha256sum 格式）。
+所以编译完输出目录里已经是成对的两个文件，不用再手工算。
+Debug 配置不生成 —— 它的产物不发布。
+
 ## 5. 冒烟测试（对着真实 Release 产物做）
 
 改的是同一个 exe，务必确认这四件事：
 
 1. 启动不崩，exe 属性（属性 → 详细信息）里版本号是新版本号
 2. 设置页「版本与更新」显示当前版本正确，且点「检查更新」不报解析错误
+     （下载进度条与下方「启动时自动检查更新」开关的右缘应与卡片内其他控件对齐）
 3. 录一段 10 秒，确认录制链路没被影响
 4. 截一张图，确认 WIC 存盘正常
 
@@ -76,32 +82,57 @@ git push origin v1.1.0
 
 tag 名必须与 `version.h` 一致，且带 `v` 前缀（小写）。
 
-## 7. 生成 `.sha256` 附件
+## 7. 改名为发布产物名
 
-每个架构一个，文件名固定为 `<exe 名>.sha256`，内容是 `sha256sum` 格式：
+`.sha256` 已由构建生成（第 4 节），这一步只是**连 exe 带校验文件一起改名**。
+校验文件内容不用动 —— 里面的文件名对解析器无影响，它只取首个 64 位十六进制段。
 
 ```powershell
 # 在仓库根目录执行；产物先拷到一个干净的临时目录，避免带 config/ log/
 $stage = "$env:TEMP\Capture-release-v1.1.0"
 Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
-Copy-Item x64\Release\Capture.exe   "$stage\Capture-v1.1.0-x64.exe"
-Copy-Item Release\Capture.exe       "$stage\Capture-v1.1.0-win32.exe"
 
-foreach ($a in 'x64','win32') {
-    Push-Location $stage
-    # 产出 "<64位十六进制>  <文件名>"（两个空格），与 GNU sha256sum 一致
-    Get-FileHash ".\Capture-v1.1.0-$a.exe" -Algorithm SHA256 |
-        ForEach-Object { "$($_.Hash.ToLower())  Capture-v1.1.0-$a.exe" } |
-        Set-Content -Encoding ascii ".\Capture-v1.1.0-$a.exe.sha256"
-    Pop-Location
-}
+# exe 与 .sha256 成对改名，别只改一个
+Copy-Item x64\Release\Capture.exe           "$stage\Capture-v1.1.0-x64.exe"
+Copy-Item x64\Release\Capture.exe.sha256    "$stage\Capture-v1.1.0-x64.exe.sha256"
+Copy-Item Release\Capture.exe               "$stage\Capture-v1.1.0-win32.exe"
+Copy-Item Release\Capture.exe.sha256        "$stage\Capture-v1.1.0-win32.exe.sha256"
 ```
 
-> **必须是两个空格，且文件名跟在后面。** 解析器取「首个长度 ≥64 的连续十六进制段」，
-> 空格数量与文件名都无所谓，但十六进制不能被换行拆开。
-> PowerShell 的 `Get-FileHash` 默认输出大写，已在上面的命令里转小写；
-> 其实解析器会归一化大小写，这里保持小写只是为了和 `sha256sum` 输出一致、便于人工核对。
+> **exe 与 `.sha256` 必须成对改名。** 忘了改 `.sha256` 的名字，它就传不上去
+> （Release 附件名必须精确匹配），或者传了 `Capture.exe.sha256` 这个名字，
+> 用户下载到的是校验文件而不是程序。
+>
+> **上传前对一次哈希**，确认改名过程没弄坏文件（改名不会，但拷贝可能中断）。
+> 下面这段用 `Get-FileHash`——它是手动验证，`Get-FileHash` 在 MSBuild 的
+> `PostBuildEvent` 环境里因模块自动加载失败而不可用，构建脚本因此改走
+> `System.Security.Cryptography`，两处标准不同是有原因的：
+>
+> ```powershell
+> foreach ($a in 'x64','win32') {
+>   $real = (Get-FileHash "$stage\Capture-v1.1.0-$a.exe" -Algorithm SHA256).Hash.ToLower()
+>   $inFile = ((Get-Content "$stage\Capture-v1.1.0-$a.exe.sha256" -Raw).Trim() -split '\s+')[0]
+>   if ($real -ne $inFile) { throw "校验文件对不上：$a" }
+> }
+> ```
+>
+> 顺带一句：`.sha256` 里记的文件名是构建时的 `Capture.exe`，改名后不更新。
+> 应用内更新（`ParseSha256Text`）只取首个 64 位十六进制段，不受影响；
+> 但人工用 `sha256sum -c` 校验会因为文件名对不上而报「没有那个文件」，
+> 那不是校验文件坏了。
+
+校验文件的格式要求（生成端在 `tools\gen-sha256.ps1`，消费端是
+`src/core/update.cpp` 的 `ParseSha256Text`）：
+
+> **必须是连续的 64 位十六进制，且不能被换行拆开。** 解析器取「首个长度 ≥64 的
+> 连续十六进制段」，空格数量、后面的文件名都无所谓，但十六进制不能断行。
+> 当前生成的是「64 位小写十六进制 + 两个空格 + 文件名 + LF」，无 BOM、无 CRLF，
+> 与 GNU `sha256sum` 一致。
+
+**要改签名（见文末「后续」）必须先签 exe 再算哈希，顺序不能反** ——
+签名会改写文件内容。若将来在 PostBuildEvent 里插入签名步骤，把它放到
+`gen-sha256.ps1` 之前。
 
 ## 8. 创建 GitHub Release
 
