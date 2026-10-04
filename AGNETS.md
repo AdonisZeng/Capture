@@ -42,6 +42,8 @@ Windows 桌面录屏应用：捕获主显示器画面 + 可选的系统声音/�
 | `src/core/appicon.h/.cpp` | 应用图标加载（exe 资源 IDI_CAPTURE） |
 | `src/core/autostart.h/.cpp` | 开机自启动：HKCU Run 注册表读写；启用时始终写当前 exe 路径，供启动时自愈 |
 | `src/core/log.h/.cpp` | 日志模块：写入 log/ 目录下按启动时间命名的 TXT，多线程安全 |
+| `src/core/version.h` | **版本号单一真源**（SemVer 三个整数宏 + 字符串宏）。纯宏、无 C++ 语法：Capture.rc 会 include 它，而 RC 预处理器不支持字符串化 |
+| `src/core/update.h/.cpp` | 应用内更新：查 GitHub Releases → 下载 exe → SHA-256 校验（BCrypt）→ 自替换替换并重启。网络与磁盘操作全在工作线程，UI 只读状态快照 |
 
 ## 架构与线程模型
 
@@ -62,7 +64,14 @@ Windows 桌面录屏应用：捕获主显示器画面 + 可选的系统声音/�
 
 - **源文件必须保存为 UTF-8 编码；MSVC 编译必须带 `/utf-8`**（已在 vcxproj 四个配置中配置）。
   历史教训：UTF-8 无 BOM 的中文源文件在默认代码页 936（GBK）下会产生 C4819/C2143/C2001 等编译错误。
-- 链接依赖：`d3d11.lib;dxgi.lib;d3dcompiler.lib;windowsapp.lib;mfplat.lib;mfreadwrite.lib;mfuuid.lib;ole32.lib;windowscodecs.lib;shell32.lib;comctl32.lib;shlwapi.lib;propsys.lib`（`propsys.lib` 用于读设备友好名的 `PropVariant` 接口）。
+- 链接依赖：`d3d11.lib;dxgi.lib;d3dcompiler.lib;windowsapp.lib;mfplat.lib;mfreadwrite.lib;mfuuid.lib;ole32.lib;windowscodecs.lib;shell32.lib;comctl32.lib;shlwapi.lib;propsys.lib;winhttp.lib;bcrypt.lib`
+  （`propsys.lib` 读设备友好名的 `PropVariant` 接口；`winhttp.lib` + `bcrypt.lib`
+  供 `core/update.cpp` 做 HTTPS 与 SHA-256）。
+- **改 `winhttp` 相关代码时注意**：`winhttp.h` 只声明 Unicode 版函数，
+  名字**没有** `W` 后缀（`WinHttpQueryHeaders` 而非 `WinHttpQueryHeadersW`），
+  参数是 `LPCWSTR`。取单个响应头（如 `Location`）用 `WINHTTP_QUERY_LOCATION`
+  （枚举值 33），**没有** `WINHTTP_QUERY_HEADER` 这个常量，写错会一直取不到值
+  从而被误判成「重定向缺少 Location」。
 - 中文 UI 字体：加载 `C:\Windows\Fonts\msyh.ttc`（微软雅黑），失败回退默认字体（否则中文显示为豆腐块）。
 - H.264 要求宽高为偶数，`Recorder::Init` 内自动向下取偶。
 - WGC 回调中的纹理由内部持有，回调外不得长期保存裸指针，需保留自行拷贝。
@@ -159,6 +168,84 @@ Windows 桌面录屏应用：捕获主显示器画面 + 可选的系统声音/�
   `deviceLost_`；设备丢失期间主循环跳过整段 UI 渲染（ImGui DX11 后端在死设备上
   Map 失败的行为不保证）。恢复失败（重建设备失败）才弹窗退出。
 
+## 版本管理与自动更新
+
+### 版本号：单一真源
+
+**`src/core/version.h` 是全仓库唯一需要改版本号的地方**，改一处即同时生效于：
+
+1. exe 资源属性（`Capture.rc` 的 `VS_VERSION_INFO`，`FILEVERSION` 取整数宏、
+   `FileVersion`/`ProductVersion` 取字符串宏）
+2. 界面左下角显示（`ui_app.cpp` 的 `Update::VersionDisplay()`）
+3. 与 GitHub Release `tag_name` 的新旧比较（`update.cpp` 的 `IsNewer`）
+
+不存在第二份需要手工同步的版本号。
+
+**踩坑：RC 预处理器不支持字符串化（`#`）与相邻字面量拼接**，所以
+`CAPTURE_VERSION_STR` 只能显式写出，无法由三个整数宏拼出来。
+代价是字符串与整数可能脱节，因此 `update.cpp` 顶部有
+`static_assert(VersionStrConsistent())` 在编译期校验二者一致——
+只改其一时编译直接失败，不会带着两个版本号发出去。
+
+另注：`Capture.rc` 需要 `#pragma code_page(65001)` 才能在字符串表里写中文；
+而 RC 预处理器拿不到 `_DEBUG`（`_DEBUG` 不会传给 `rc.exe`），
+故 `FILEFLAGS` 一律为 0，Debug/Release 不体现在版本资源里。
+
+### 自动更新链路
+
+`core/update.cpp`，链路为：查 `/releases/latest` → 下载 → 校验 → 替换 → 重启。
+
+**为什么用 `/releases/latest` 而不是 `/releases` 列表**：前者自动排除草稿与
+预发布（prerelease），语义恰好等于「正式版」。故测试版必须标 prerelease，
+否则正式版用户会被提示去装测试版。
+
+**替换自身复用同一个 exe 的助手模式**（命令行 `--apply-update`），不引入第二个
+可执行文件。原理：**运行中的映像不能被覆盖，但可以改名**——助手等旧进程退出后，
+先把当前 exe 改名成 `Capture.exe.old`，再把新文件移到位，最后拉起新版本。
+`.old` 留给新实例下次启动删除（`CleanupStaleBackup`）；万一新版本起不来，
+用户改名回滚即可。
+
+**`--apply-update` 的 `RunApplyHelper()` 必须排在单实例互斥量之前**
+（`wWinMain` 最开头）。否则助��这个第二实例会被互斥量判定成「已有实例」直接退出，
+永远等不到该做的换文件动作。
+
+**重启带 `--updated` 标记**，新实例据此**重试等待互斥量**（最多 10s）：
+旧进程刚退出时内核尚未释放互斥量，不重试就会被秒退，用户看到的是
+「程序自己关掉了且再也不出现」。
+
+**助手也是本进程的孩子**，主进程退出后仍会继续运行，不受影响。
+
+### 安全性边界（务必如实告知用户）
+
+exe **没有 Authenticode 签名**，可信度只有两层：
+
+1. WinHTTP 的 HTTPS 证书链校验（默认开启；代码里**不得**设置
+   `WINHTTP_OPTION_SECURITY_FLAGS` 的 `IGNORE_*` 标志），并显式要求 TLS 1.2+
+2. 发布物 SHA-256 与 Release 上的 `.sha256` 附件比对
+
+这两层挡得住传输损坏与中间人降级，**挡不住 CA 被攻破或本机被装根证书**。
+给 `core/update.cpp` 加 `WinVerifyTrust` 验签才真正闭环，见 `docs/RELEASING.md`
+的「后续」一节。**在签名之前，对外不要宣称更新包「已验证来源可信」。**
+
+### 产物命名是硬性约定
+
+`Capture-vX.Y.Z-x64.exe` + 同名 `.exe.sha256`（Win32 同理）。
+名字对不上，用户点检查更新会得到「无法解析 GitHub 返回的发布信息」。
+详见 `docs/RELEASING.md`。
+
+### 其他约定
+
+- **GitHub 未认证接口限流是每 IP 每小时 60 次**。公司/校园/云主机 NAT 出口
+  容易和别人共用这个额度，用满就是 403。故 `HttpGet` 对 401/403/404/429
+  分别给了可执行的中文文案，而不是干巴巴的「HTTP 403」。
+- **启动自动检查最短间隔 24 小时**（`updateAutoCheck` / `updateLastCheck` /
+  `updateSkipTag` 三个键落盘在 `settings.json`），避免频繁触发限流与打扰用户。
+- **`update.cpp` 的极简 JSON 取值器**只做「按 key 取字符串/整数」，
+  `assets` 数组靠花括号配平切分（产物名与直链里不含花括号）。
+  解析失败时会把响应开头 2KB 打进日志——GitHub 改了字段格式能立刻看出来。
+- **录制/保存期间更新按钮一律禁用**：换文件必须等程序完全空闲，
+  否则助手要等主进程退出、而主进程此时还在等 `Finalize`，用户看到的是「点了没反应」。
+
 ## 构建与运行
 
 - 用 Visual Studio 打开 `Capture.slnx`（或 msbuild `Capture.vcxproj`），选 x64 配置编译。
@@ -206,6 +293,36 @@ Visual Studio 装在 **D 盘**，所以 `where msbuild` / `where cl` 一律找�
 
 ## 变更记录（只记功能级变更，小修不记）
 
+> 本节是**仓库内部**的实现记录，粒度比面向用户的 `CHANGELOG.md` 粗。
+> 发版时要写给用户看的内容整理到 `CHANGELOG.md`；发布流程见 `docs/RELEASING.md`。
+
+- 2026-10-04 版本管理 + 应用内自动更新（Release/Debug × x64/Win32 四配置
+  重建通过；设置项改动按 AGNETS.md 要求做了 JSON 黑盒往返实测 18 项全过；
+  网络层对 github.com 实测 TLS/证书链/分块读取/落盘字节数一致，
+  404 与 403 两条错误文案均真实触发验证）：
+  - **版本单一真源** `src/core/version.h`（SemVer 宏，RC 预处理器安全），
+    驱动 exe `VS_VERSION_INFO`、界面显示、与 Release tag 比较；
+    `static_assert` 校验字符串宏与整数宏一致，防脱节。
+    `Capture.rc` 加 `#pragma code_page(65001)` 以便字符串表写中文。
+    原先 `kVersion = "v1.0"` 硬编码在 `ui_app.cpp`，已移除。
+  - **`core/update.h/.cpp`**：查 `/releases/latest` → 下载 → SHA-256 校验
+    （BCrypt）→ 自替换替换并重启。助手复用本 exe 的 `--apply-update` 模式，
+    靠「运行中映像可改名不可覆盖」实现无第二个可执行文件的替换；
+    旧进程 exe 留 `.old` 备份，新实例启动时清理。
+  - **入口顺序**：`RunApplyHelper()` 必须在单实例互斥量之前（否则助手被
+    互斥量秒退）；重启实例带 `--updated` 时**重试等待互斥量最多 10s**
+    （旧进程刚退出时内核尚未释放互斥量，否则用户看到程序自己关掉不再出现）。
+  - **UI**：设置页新增「版本与更新」卡片（当前版本 / 状态行 / 进度条 /
+    按钮组 / 自动检查开关），高度按内容实际结束位置反算——状态在
+    检查中/有新版本/下载中/已就绪/失败之间切换，行数会变，写死必然溢出。
+    发现新版本弹模态框（含发布说明与四个动作）。托盘菜单加「检查更新…」。
+  - **配置新增三键**：`updateAutoCheck` / `updateLastCheck`（Unix 秒）/
+    `updateSkipTag`；启动静默检查最短间隔 24h，避免频繁触发 GitHub 限流。
+  - **HTTP 错误文案分状态码**：GitHub 未认证接口是每 IP 每小时 60 次，
+    NAT 出口容易共用额度被打满（403），故 401/403/404/429 各给可执行文案。
+  - **`TrayAction::CheckUpdate` 必须是枚举最后一个成员**：`OnMessage` 用
+    「值落在 `Show..CheckUpdate` 区间」识别主动投递，新增成员忘改上界
+    会表现为「菜单点了没反应」。
 - 2026-10-04 P1+P2（Debug/Release ×64 重建通过）：
   - **暂停/继续**：`AppState::paused` + 主循环 `wantPause/wantResume`，
     回调层丢帧、恢复时 `baseTime += 暂停时长`（暂停段被剪掉，混音器按跳变自愈）；
