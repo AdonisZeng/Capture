@@ -582,6 +582,12 @@ float MeasureFooterHeight(const FooterMetrics& m)
         h += Space::Sm + Control::Button;
     if (m.hasSingleBtn)
         h += Space::Md + Control::ButtonSm;
+    if (m.historyRows > 0)
+    {
+        // 与 page_capture 的画法逐项对齐：段前留白 + 小标题行 + 每行（按钮 + 行距）
+        h += Space::Md + TextLineH(FontSmall);
+        h += m.historyRows * (Control::ButtonSm + ImGui::GetStyle().ItemSpacing.y);
+    }
     return h;
 }
 

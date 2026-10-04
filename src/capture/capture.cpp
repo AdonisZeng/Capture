@@ -1,7 +1,10 @@
 #include "capture.h"
 #include "core/log.h"
 #include <dxgi1_2.h>
+#include <algorithm>
 #include <atomic>
+#include <cwchar>
+#include <cstdio>
 #include <winrt/Windows.Graphics.DirectX.h>
 #include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
 #include <windows.graphics.capture.interop.h>
@@ -20,24 +23,85 @@ ScreenCapture::~ScreenCapture()
     Stop();
 }
 
-bool ScreenCapture::Start(ID3D11Device* device, bool includeCursor,
-                          FrameFn onFrame, std::wstring& err)
+bool ScreenCapture::StartForMonitor(HMONITOR hmon, ID3D11Device* device, bool includeCursor,
+                                    FrameFn onFrame, std::wstring& err)
 {
+    if (!hmon)
+        hmon = MonitorFromPoint({ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
     try
     {
-        device_ = device;
-        onFrame_ = std::move(onFrame);
-
-        // 主显示器 HMONITOR
-        HMONITOR hmon = MonitorFromPoint({ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
-
-        // IGraphicsCaptureItemInterop::CreateForMonitor：Win10 1803+ 全系可用
         auto interop = get_activation_factory<GraphicsCaptureItem,
                                               IGraphicsCaptureItemInterop>();
         com_ptr<::IInspectable> itemInspectable;
         check_hresult(interop->CreateForMonitor(
             hmon, guid_of<GraphicsCaptureItem>(), itemInspectable.put_void()));
-        item_ = itemInspectable.as<GraphicsCaptureItem>();
+        auto item = itemInspectable.as<GraphicsCaptureItem>();
+        return StartWithItem(item, device, includeCursor, std::move(onFrame), L"显示器", err);
+    }
+    catch (hresult_error const& e)
+    {
+        err = std::wstring(L"WGC 捕获启动失败: ") + std::wstring(e.message().c_str());
+        LOG_ERR(L"%s (hr=0x%08lX)", err.c_str(), (unsigned long)e.code().value);
+        Stop();
+        return false;
+    }
+    catch (...)
+    {
+        err = L"WGC 捕获启动失败: 未知错误";
+        LOG_ERR(L"%s", err.c_str());
+        Stop();
+        return false;
+    }
+}
+
+bool ScreenCapture::StartForWindow(HWND hwnd, ID3D11Device* device, bool includeCursor,
+                                   FrameFn onFrame, std::wstring& err)
+{
+    if (!IsWindow(hwnd))
+    {
+        err = L"所选窗口已关闭，请重新选择";
+        LOG_ERR(L"WGC 窗口捕获: %s", err.c_str());
+        return false;
+    }
+    try
+    {
+        auto interop = get_activation_factory<GraphicsCaptureItem,
+                                              IGraphicsCaptureItemInterop>();
+        com_ptr<::IInspectable> itemInspectable;
+        check_hresult(interop->CreateForWindow(
+            hwnd, guid_of<GraphicsCaptureItem>(), itemInspectable.put_void()));
+        auto item = itemInspectable.as<GraphicsCaptureItem>();
+        wchar_t title[128] = {};
+        GetWindowTextW(hwnd, title, 128);
+        std::wstring desc = std::wstring(L"窗口「") + title + L"」";
+        return StartWithItem(item, device, includeCursor, std::move(onFrame), desc.c_str(), err);
+    }
+    catch (hresult_error const& e)
+    {
+        err = std::wstring(L"WGC 窗口捕获启动失败: ") + std::wstring(e.message().c_str());
+        LOG_ERR(L"%s (hr=0x%08lX)", err.c_str(), (unsigned long)e.code().value);
+        Stop();
+        return false;
+    }
+    catch (...)
+    {
+        err = L"WGC 窗口捕获启动失败: 未知错误";
+        LOG_ERR(L"%s", err.c_str());
+        Stop();
+        return false;
+    }
+}
+
+bool ScreenCapture::StartWithItem(const GraphicsCaptureItem& item, ID3D11Device* device,
+                                  bool includeCursor, FrameFn onFrame,
+                                  const wchar_t* srcDesc, std::wstring& err)
+{
+    Stop();   // 与之前的会话互斥，调用方无需先 Stop
+    try
+    {
+        device_ = device;
+        onFrame_ = std::move(onFrame);
+        item_ = item;
 
         // ID3D11Device -> IDirect3DDevice（WGC 需要）
         com_ptr<IDXGIDevice> dxgiDevice;
@@ -62,7 +126,7 @@ bool ScreenCapture::Start(ID3D11Device* device, bool includeCursor,
 
         session_.StartCapture();
         running_ = true;
-        LOG_INFO(L"WGC 捕获已启动: 显示器 %ux%u, 光标=%d",
+        LOG_INFO(L"WGC 捕获已启动: %ls %ux%u, 光标=%d", srcDesc ? srcDesc : L"",
                  item_.Size().Width, item_.Size().Height, includeCursor ? 1 : 0);
         return true;
     }
@@ -117,6 +181,115 @@ void ScreenCapture::GetLatestFrame(Microsoft::WRL::ComPtr<ID3D11Texture2D>& outT
     outTex = latestTex_;
     outW = latestW_;
     outH = latestH_;
+}
+
+// ---------------------------------------------------------------------------
+// 显示器 / 窗口枚举（画面来源选择器用）
+// ---------------------------------------------------------------------------
+namespace {
+
+BOOL CALLBACK MonitorEnumProc(HMONITOR hmon, HDC, LPRECT, LPARAM lParam)
+{
+    auto* out = (std::vector<MonitorInfo>*)lParam;
+    MONITORINFOEXW mi{ sizeof(mi) };
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoW(hmon, &mi))
+        return TRUE;
+    MonitorInfo info;
+    info.hmon = hmon;
+    info.device = mi.szDevice;
+    const int w = mi.rcMonitor.right - mi.rcMonitor.left;
+    const int h = mi.rcMonitor.bottom - mi.rcMonitor.top;
+    wchar_t label[128] = {};
+    const bool primary = (mi.dwFlags & MONITORINFOF_PRIMARY) != 0;
+    swprintf_s(label, L"%ls · %dx%d%s", mi.szDevice, w, h, primary ? L"（主）" : L"");
+    info.label = label;
+    info.primary = primary;
+    out->push_back(std::move(info));
+    return TRUE;
+}
+
+struct WinEnumCtx
+{
+    std::vector<WindowInfo>* out;
+    HWND exclude;
+};
+
+BOOL CALLBACK WindowEnumProc(HWND hwnd, LPARAM lParam)
+{
+    auto* ctx = (WinEnumCtx*)lParam;
+    if (hwnd == ctx->exclude || !IsWindowVisible(hwnd) || IsIconic(hwnd))
+        return TRUE;
+    RECT rc{};
+    if (!GetWindowRect(hwnd, &rc) || rc.right - rc.left <= 0 || rc.bottom - rc.top <= 0)
+        return TRUE;
+    wchar_t title[256] = {};
+    if (GetWindowTextW(hwnd, title, 256) <= 0 || title[0] == L'\0')
+        return TRUE;
+    WindowInfo info;
+    info.hwnd = hwnd;
+    info.title = title;
+    ctx->out->push_back(std::move(info));
+    return TRUE;
+}
+
+}   // namespace
+
+bool EnumerateMonitors(std::vector<MonitorInfo>& out)
+{
+    out.clear();
+    if (!EnumDisplayMonitors(nullptr, nullptr, MonitorEnumProc, (LPARAM)&out) || out.empty())
+    {
+        LOG_ERR(L"枚举显示器失败");
+        return false;
+    }
+    // 主显示器排第一（选择器第 0 项语义稳定）
+    for (size_t i = 0; i < out.size(); ++i)
+    {
+        if (out[i].primary && i != 0)
+        {
+            std::swap(out[0], out[i]);
+            break;
+        }
+    }
+    return true;
+}
+
+HMONITOR FindMonitor(const std::wstring& device)
+{
+    HMONITOR primary = MonitorFromPoint({ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
+    if (device.empty())
+        return primary;
+    std::vector<MonitorInfo> mons;
+    if (!EnumerateMonitors(mons))
+        return primary;
+    for (const MonitorInfo& m : mons)
+    {
+        if (m.device == device)
+            return m.hmon;
+    }
+    LOG_WARN(L"保存的显示器 %ls 已不存在，回退主显示器", device.c_str());
+    return primary;
+}
+
+bool EnumerateWindows(std::vector<WindowInfo>& out, HWND exclude)
+{
+    out.clear();
+    WinEnumCtx ctx{ &out, exclude };
+    if (!EnumWindows(WindowEnumProc, (LPARAM)&ctx))
+    {
+        LOG_ERR(L"枚举窗口失败");
+        return false;
+    }
+    // EnumWindows 按 Z 序返回，界面里表现为顺序随机。按标题排序让列表可预期；
+    // 标题可能完全相同（同一应用的多个窗口），故再按句柄兜底保证全序
+    std::sort(out.begin(), out.end(), [](const WindowInfo& a, const WindowInfo& b) {
+        const int c = _wcsicmp(a.title.c_str(), b.title.c_str());
+        if (c != 0)
+            return c < 0;
+        return (UINT_PTR)a.hwnd < (UINT_PTR)b.hwnd;
+    });
+    return true;
 }
 
 void ScreenCapture::OnFrameArrived(const Direct3D11CaptureFramePool& sender,

@@ -74,6 +74,10 @@ constexpr float Row       = 26.0f;    // 开关 / 标签行高
 constexpr float CardPad   = 18.0f;    // 卡片内边距
 constexpr float BrowseBtn = 60.0f;    // 「浏览」按钮固定宽度
 constexpr float PushDown  = 1.0f;     // 按下时的视觉下沉位移
+// 铺满整行时左右各留出的安全边距。描边以矩形边线为中心绘制，而滚动容器的
+// 裁剪边恰好落在内容区边界上：控件贴边排布时外侧半像素会被裁掉，叠加圆角后
+// 最左/最右控件的竖边描边基本不可见（表现为"按钮没有边框"）。故整行控件必须内缩。
+constexpr float EdgeInset = 1.0f;
 }   // namespace Control
 
 // ---------------------------------------------------------------------------

@@ -161,6 +161,10 @@ void ApplyTheme()
     c[ImGuiCol_SeparatorHovered]    = Pal::ScrollGrabHovered();
     c[ImGuiCol_SeparatorActive]     = Pal::Accent();
     c[ImGuiCol_PlotLines]           = Pal::Accent();
+    // ProgressBar 的填充取 PlotHistogram（不是 PlotLines）。不设的话会用 ImGui
+    // 默认色，深浅两套主题下都和 Accent 不协调
+    c[ImGuiCol_PlotHistogram]       = Pal::Accent();
+    c[ImGuiCol_PlotHistogramHovered]= Pal::Accent();
     c[ImGuiCol_Tab]                 = Pal::FrameBg();
     c[ImGuiCol_TabHovered]          = Pal::FrameBgHovered();
     c[ImGuiCol_TabSelected]         = Pal::HeaderBg();

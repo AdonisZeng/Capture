@@ -30,6 +30,15 @@ enum ShotFormat
     ShotFormatCount= 5
 };
 
+// 画面来源（Settings::captureSource 取值，新值只能追加）
+enum CapSource
+{
+    CapMonitor = 0,   // 显示器（captureMonitorDevice 为空 = 主显示器）
+    CapWindow  = 1,   // 指定窗口（HWND 会话内有效，不持久化）
+    CapRegion  = 2,   // 区域（开始录制时框选，按所选区域原分辨率录制）
+    CapSourceCount = 3
+};
+
 struct Settings
 {
     // ---- 录制 ----
@@ -47,6 +56,10 @@ struct Settings
     int          micVolume      = 100;  // 麦克风增益 %（0..200，100 = 原音量）
     int          audioBitrate   = 192;  // AAC 音频码率 kbps：96 / 128 / 192 / 256
     bool         includeCursor  = true; // 画面含鼠标指针
+    int          captureSource  = CapMonitor; // CapSource：显示器 / 窗口 / 区域
+    std::wstring captureMonitorDevice = L"";  // 显示器设备名（如 \\.\DISPLAY1，空 = 主显示器）
+    int          recDelaySec    = 0;    // 开始录制前的延时秒数（0 = 立即）
+    bool         openFolderAfterRec = false;  // 录制保存完成后打开文件位置
 
     // ---- 截图 ----
     std::wstring shotDir        = L"";   // 空 = 跟随 saveDir

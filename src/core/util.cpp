@@ -121,6 +121,17 @@ bool RevealInExplorer(const std::wstring& file)
     return (INT_PTR)rc > 32;
 }
 
+bool GetFreeDiskBytes(const std::wstring& path, ULONGLONG& freeBytes)
+{
+    if (path.empty())
+        return false;
+    ULARGE_INTEGER freeAvail{}, total{}, totalFree{};
+    if (!GetDiskFreeSpaceExW(path.c_str(), &freeAvail, &total, &totalFree))
+        return false;
+    freeBytes = freeAvail.QuadPart;
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // 文件名
 // ---------------------------------------------------------------------------

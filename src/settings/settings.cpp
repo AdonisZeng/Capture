@@ -215,6 +215,8 @@ void FillDefaults(Settings& s)
     ClampInt(s.audioBitrate, 64, 320, 192);
     ClampInt(s.sysVolume, 0, 200, 100);
     ClampInt(s.micVolume, 0, 200, 100);
+    ClampInt(s.captureSource, 0, CapSourceCount - 1, CapMonitor);
+    ClampInt(s.recDelaySec, 0, 30, 0);
     ClampInt(s.shotFormat, 0, ShotFormatCount - 1, ShotFormatPng);
     ClampInt(s.lastPage, 0, 3, 0);
     ClampInt(s.windowW, 900, 3840, 1080);
@@ -289,6 +291,7 @@ bool LoadSettings(Settings& s)
             else if (key == "hotkeyShow")    s.hotkeyShow    = wv;
             else if (key == "sysAudioDevice") s.sysAudioDevice = wv;
             else if (key == "micDevice")     s.micDevice     = wv;
+            else if (key == "captureMonitorDevice") s.captureMonitorDevice = wv;
             else parsed++;
         }
         else
@@ -300,6 +303,8 @@ bool LoadSettings(Settings& s)
             else if (key == "audioBitrate")  s.audioBitrate  = atoi(val.c_str());
             else if (key == "sysVolume")     s.sysVolume     = atoi(val.c_str());
             else if (key == "micVolume")     s.micVolume     = atoi(val.c_str());
+            else if (key == "captureSource") s.captureSource = atoi(val.c_str());
+            else if (key == "recDelaySec")   s.recDelaySec   = atoi(val.c_str());
             else if (key == "lastPage")      s.lastPage     = atoi(val.c_str());
             else if (key == "shotFormat")    s.shotFormat   = atoi(val.c_str());
             else if (key == "windowW")       s.windowW      = atoi(val.c_str());
@@ -310,6 +315,7 @@ bool LoadSettings(Settings& s)
             // withMic 由 SaveSettings 写出，此前漏了读取分支导致麦克风开关无法持久化
             else if (key == "withMic")     s.withMic      = (val == "true");
             else if (key == "includeCursor") s.includeCursor= (val == "true");
+            else if (key == "openFolderAfterRec") s.openFolderAfterRec = (val == "true");
             else if (key == "hwEncode")      s.hwEncode     = (val == "true");
             else if (key == "shotSaveFile")  s.shotSaveFile = (val == "true");
             else if (key == "shotCopyClip")  s.shotCopyClip = (val == "true");
@@ -352,6 +358,9 @@ bool SaveSettings(const Settings& s)
     fprintf(f, "  \"hotkeyShow\": \"%s\",\n",    JsonEscape(s.hotkeyShow).c_str());
     fprintf(f, "  \"sysAudioDevice\": \"%s\",\n", JsonEscape(s.sysAudioDevice).c_str());
     fprintf(f, "  \"micDevice\": \"%s\",\n",    JsonEscape(s.micDevice).c_str());
+    fprintf(f, "  \"captureMonitorDevice\": \"%s\",\n", JsonEscape(s.captureMonitorDevice).c_str());
+    fprintf(f, "  \"captureSource\": %d,\n",    s.captureSource);
+    fprintf(f, "  \"recDelaySec\": %d,\n",      s.recDelaySec);
     fprintf(f, "  \"fps\": %d,\n",              s.fps);
     fprintf(f, "  \"recResolution\": %d,\n",    s.recResolution);
     fprintf(f, "  \"bitrateMbps\": %d,\n",      s.bitrateMbps);
@@ -362,6 +371,7 @@ bool SaveSettings(const Settings& s)
     fprintf(f, "  \"micVolume\": %d,\n",       s.micVolume);
     fprintf(f, "  \"audioBitrate\": %d,\n",     s.audioBitrate);
     fprintf(f, "  \"includeCursor\": %s,\n",    s.includeCursor ? "true" : "false");
+    fprintf(f, "  \"openFolderAfterRec\": %s,\n", s.openFolderAfterRec ? "true" : "false");
     fprintf(f, "  \"shotSaveFile\": %s,\n",     s.shotSaveFile ? "true" : "false");
     fprintf(f, "  \"shotCopyClip\": %s,\n",     s.shotCopyClip ? "true" : "false");
     fprintf(f, "  \"shotFormat\": %d,\n",       s.shotFormat);

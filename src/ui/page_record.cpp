@@ -5,6 +5,7 @@
 #include "settings/settings.h"
 #include "recorder/recorder.h"
 #include "audio/audio.h"
+#include "capture/capture.h"
 #include "core/util.h"
 #include <windows.h>
 #include <cstdio>
@@ -35,6 +36,12 @@ const int kBrValues[] = { 0, 8, 12, 16, 24, 32, 48 };
 
 const char* const kAudioBrItems[] = { "96 kbps", "128 kbps", "192 kbps", "256 kbps" };
 const int kAudioBrValues[] = { 96, 128, 192, 256 };
+
+const char* const kSrcItems[] = { "显示器", "窗口", "区域" };
+const int kSrcValues[] = { CapMonitor, CapWindow, CapRegion };
+
+const char* const kDelayItems[] = { "立即开始", "延时 3 秒", "延时 5 秒", "延时 10 秒" };
+const int kDelayValues[] = { 0, 3, 5, 10 };
 
 // 数组元素个数，避免 items/values 两张表长度对不上
 template <typename T, size_t N>
@@ -129,6 +136,99 @@ struct DevicePicker
 DevicePicker g_sysPicker;
 DevicePicker g_micPicker;
 
+// ---- 显示器选择器（与音频设备选择器同构：缓存 + 刷新按钮）----
+struct MonitorPicker
+{
+    std::vector<MonitorInfo> devs;
+    std::vector<std::string> labels;
+    std::vector<const char*> items;
+    bool valid = false;
+
+    void Refresh()
+    {
+        devs.clear();
+        EnumerateMonitors(devs);
+        labels.clear();
+        items.clear();
+        for (const MonitorInfo& m : devs)
+            labels.push_back(WideToUtf8Str(m.label));
+        for (const std::string& s : labels)
+            items.push_back(s.c_str());
+        valid = true;
+    }
+    // 配置里的显示器已拔出时回落到主显示器
+    int IndexOf(const std::wstring& device) const
+    {
+        for (size_t i = 0; i < devs.size(); ++i)
+            if (devs[i].device == device)
+                return (int)i;
+        for (size_t i = 0; i < devs.size(); ++i)
+            if (devs[i].primary)
+                return (int)i;
+        return 0;
+    }
+    int Count() const { return (int)devs.size(); }
+};
+
+MonitorPicker g_monPicker;
+
+// ---- 窗口选择器（HWND 会话内有效，不进配置文件）----
+struct WindowPicker
+{
+    std::vector<WindowInfo> wins;
+    std::vector<std::string> labels;
+    std::vector<const char*> items;
+    int sel = 0;
+
+    void Refresh(HWND exclude)
+    {
+        wins.clear();
+        EnumerateWindows(wins, exclude);
+        labels.clear();
+        items.clear();
+        for (const WindowInfo& w : wins)
+            labels.push_back(WideToUtf8Str(w.title));
+        for (const std::string& s : labels)
+            items.push_back(s.c_str());
+        sel = 0;
+    }
+};
+
+WindowPicker g_winPicker;
+
+void DrawWindowPickerModal(const UiContext& ctx)
+{
+    AppState& st = *ctx.st;
+    if (ImGui::BeginPopupModal("选择窗口", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        if (g_winPicker.wins.empty())
+        {
+            ImGui::TextDisabled("没有可捕获的窗口");
+        }
+        else
+        {
+            ImGui::ListBox("##winlist", &g_winPicker.sel,
+                           g_winPicker.items.data(), (int)g_winPicker.items.size(), 8);
+        }
+        if (SecondaryButton("win_ok", "确定", ImVec2(96.0f, Control::ButtonSm), nullptr)
+            && !g_winPicker.wins.empty())
+        {
+            int s = g_winPicker.sel;
+            if (s < 0 || s >= (int)g_winPicker.wins.size())
+                s = 0;
+            const WindowInfo& w = g_winPicker.wins[s];
+            st.capWindow = w.hwnd;
+            st.capWindowTitle = w.title;
+            st.wantCaptureRestart = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (SecondaryButton("win_cancel", "取消", ImVec2(96.0f, Control::ButtonSm), nullptr))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+}
+
 }   // namespace
 
 void DrawRecordPage(const UiContext& ctx)
@@ -140,6 +240,9 @@ void DrawRecordPage(const UiContext& ctx)
     const bool recording = st.State() == RunState::Recording;
     const bool saving    = st.State() == RunState::Saving;
     const bool busy      = st.IsBusy();
+    // 区域录制按所选区域原分辨率录，分辨率档位不生效：相关控件置灰并说明原因，
+    // 否则界面显示的档位与实际文件不符（预估与实际必须同源）
+    const bool regionMode = cfg.captureSource == CapRegion;
 
     const float pad = Control::CardPad;
     const float gap = pad;
@@ -147,7 +250,7 @@ void DrawRecordPage(const UiContext& ctx)
 
     PageTitle("录屏",
               recording ? "正在录制，配置项已锁定以保证文件与界面显示一致"
-                        : "捕获主显示器画面，可同时录制系统声音与麦克风，输出 MP4（H.264 + AAC）");
+                        : "输出 MP4（H.264 + AAC），可同时录制系统声音与麦克风");
 
     const float fullH = ImGui::GetContentRegionAvail().y;
     const float leftW = (fullW - gap) * 0.58f;
@@ -179,11 +282,19 @@ void DrawRecordPage(const UiContext& ctx)
     char pvInfo[128];
     if (recording)
     {
-        long long sec = (long long)((GetTickCount64() - st.recordStartTick) / 1000);
-        if (sec < 0) sec = 0;
-        snprintf(pvInfo, sizeof(pvInfo), "● REC   %s   %ux%u @ %d fps",
-                 FormatElapsed(sec).c_str(), st.previewW, st.previewH, cfg.fps);
-        ImGui::TextColored(Pal::Danger(), pvInfo);
+        const long long sec = RecElapsedSec(st);
+        if (st.paused)
+        {
+            snprintf(pvInfo, sizeof(pvInfo), "已暂停   %s   %ux%u",
+                     FormatElapsed(sec).c_str(), st.previewW, st.previewH);
+            ImGui::TextColored(Pal::Warning(), pvInfo);
+        }
+        else
+        {
+            snprintf(pvInfo, sizeof(pvInfo), "● REC   %s   %ux%u @ %d fps",
+                     FormatElapsed(sec).c_str(), st.previewW, st.previewH, cfg.fps);
+            ImGui::TextColored(Pal::Danger(), pvInfo);
+        }
     }
     else
     {
@@ -213,6 +324,68 @@ void DrawRecordPage(const UiContext& ctx)
     if (busy)
         ImGui::BeginDisabled();
 
+    // ---- 画面来源 ----
+    SectionTitle("画面来源");
+    {
+        int idx = ValueToIndex(kSrcValues, CountOf(kSrcValues), cfg.captureSource, 0);
+        if (ComboRow("src", "来源", labelW, kSrcItems, CountOf(kSrcItems), &idx))
+        {
+            cfg.captureSource = kSrcValues[idx];
+            SaveSettings(cfg);
+            st.wantCaptureRestart = true;
+        }
+        if (cfg.captureSource == CapMonitor)
+        {
+            if (ImGui::IsWindowAppearing() || !g_monPicker.valid)
+                g_monPicker.Refresh();
+            if (g_monPicker.Count() > 0)
+            {
+                int midx = g_monPicker.IndexOf(cfg.captureMonitorDevice);
+                if (ComboRow("mondev", "显示器", labelW, g_monPicker.items.data(),
+                             g_monPicker.Count(), &midx))
+                {
+                    cfg.captureMonitorDevice = g_monPicker.devs[midx].device;
+                    SaveSettings(cfg);
+                    st.wantCaptureRestart = true;
+                }
+            }
+            else
+            {
+                HintTextColored("未枚举到显示器", Pal::Warning());
+            }
+        }
+        else if (cfg.captureSource == CapWindow)
+        {
+            const bool winAlive = IsWindow(st.capWindow);
+            std::string cur = st.capWindowTitle.empty()
+                ? std::string("尚未选择")
+                : WideToUtf8Str(st.capWindowTitle);
+            if (cur.size() > 42)
+                cur = cur.substr(0, 42) + "…";
+            FieldLabel("窗口", labelW);
+            ImGui::TextUnformatted(cur.c_str());
+            ImGui::SameLine();
+            if (SecondaryButton("pickwin", "选择窗口…",
+                                ImVec2(Control::BrowseBtn + 40.0f, Control::ButtonSm), nullptr))
+            {
+                g_winPicker.Refresh(ctx.ownerHwnd);
+                ImGui::OpenPopup("选择窗口");
+            }
+            DrawWindowPickerModal(ctx);
+            // 窗口没了必须说清楚：此刻主循环尚未跑到回退分支（下一帧才处理），
+            // 预览仍是冻结的最后一帧，说「已回退」不成立，只说后果
+            if (!winAlive && !st.capWindowTitle.empty())
+                HintTextColored("所选窗口已关闭，画面来源将回退到显示器", Pal::Warning());
+            else
+                HintText("录制所选窗口；窗口被关闭时录制会自动中止");
+        }
+        else
+        {
+            HintText("开始录制时拖选屏幕区域，按所选区域原分辨率录制");
+        }
+    }
+
+    SectionDivider();
     // ---- 输出位置 ----
     SectionTitle("输出位置");
 
@@ -234,9 +407,59 @@ void DrawRecordPage(const UiContext& ctx)
     if (PathRow("recname", "文件名", labelW, g_recNameBuf, sizeof(g_recNameBuf)))
         cfg.recordPattern = Utf8ToWide(g_recNameBuf);
 
+    ImGui::Dummy(ImVec2(0.0f, Space::Xs + 2.0f));
+    {
+        int idx = ValueToIndex(kDelayValues, CountOf(kDelayValues), cfg.recDelaySec, 0);
+        if (ComboRow("recdelay", "开始延时", labelW, kDelayItems, CountOf(kDelayItems), &idx))
+        {
+            cfg.recDelaySec = kDelayValues[idx];
+            SaveSettings(cfg);
+        }
+    }
+
+    ImGui::Dummy(ImVec2(0.0f, Space::Xs + 2.0f));
+    if (ToggleRow("openfolder", "完成后打开文件位置", &cfg.openFolderAfterRec))
+        SaveSettings(cfg);
+
     // ---- 画质 ----
     SectionDivider();
     SectionTitle("画质");
+    // 一键预设：填充下方三项，可再微调。区域模式下分辨率不生效，
+    // 预设仍可用（帧率与码率都生效）
+    {
+        // 三个按钮按内容区宽度精确铺满，最左/最右按钮的竖边描边正好压在滚动容器
+        // 的裁剪边上被裁掉半像素，看上去就是没有边框。左右各内缩 EdgeInset 解决。
+        const float inset = Control::EdgeInset;
+        const float pw = (ImGui::GetContentRegionAvail().x
+                          - inset * 2.0f - Space::Md * 2.0f) / 3.0f;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + inset);
+        if (SecondaryButton("preset_hi", "清晰优先", ImVec2(pw, Control::ButtonSm), nullptr))
+        {
+            cfg.recResolution = RecResNative;
+            cfg.fps = 60;
+            cfg.bitrateMbps = 0;
+            SaveSettings(cfg);
+        }
+        ImGui::SameLine(0.0f, Space::Md);
+        if (SecondaryButton("preset_mid", "均衡", ImVec2(pw, Control::ButtonSm), nullptr))
+        {
+            cfg.recResolution = RecRes1080P;
+            cfg.fps = 30;
+            cfg.bitrateMbps = 0;
+            SaveSettings(cfg);
+        }
+        ImGui::SameLine(0.0f, Space::Md);
+        if (SecondaryButton("preset_lo", "小体积", ImVec2(pw, Control::ButtonSm), nullptr))
+        {
+            cfg.recResolution = RecRes720P;
+            cfg.fps = 30;
+            cfg.bitrateMbps = 8;
+            SaveSettings(cfg);
+        }
+        HintText("预设：清晰=原画60fps自动码率；均衡=1080P30fps自动；小体积=720P30fps8Mbps");
+    }
+
+    ImGui::Dummy(ImVec2(0.0f, Space::Xs));
 
     // 选项较多的项一律用下拉框：帧率 7 档、分辨率 5 档，
     // 放进分段控件会把每项压到不足 60px，中文标签必然截断
@@ -251,27 +474,39 @@ void DrawRecordPage(const UiContext& ctx)
 
     ImGui::Dummy(ImVec2(0.0f, Space::Xs + 2.0f));
     {
+        ImGui::BeginDisabled(regionMode);
         int idx = ValueToIndex(kResValues, CountOf(kResValues), cfg.recResolution, 4);
         if (ComboRow("res", "分辨率", labelW, kResItems, CountOf(kResItems), &idx))
         {
             cfg.recResolution = kResValues[idx];
             SaveSettings(cfg);
         }
+        ImGui::EndDisabled();
 
-        UINT rw = 0, rh = 0;
-        RecordOutputSize(st.previewW, st.previewH, cfg.recResolution, rw, rh);
-        char resHint[128];
-        if (rw && rh)
+        char resHint[160];
+        if (regionMode)
         {
-            if (rw != (st.previewW & ~1u) || rh != (st.previewH & ~1u))
-                snprintf(resHint, sizeof(resHint), "实际录制：%u×%u（画面源 %u×%u，等比缩放）",
-                         rw, rh, st.previewW, st.previewH);
-            else
-                snprintf(resHint, sizeof(resHint), "实际录制：%u×%u（原画，不做缩放）", rw, rh);
+            // 区域模式的实际尺寸由开始录制时的框选决定，此处无法预知，只能说明规则
+            snprintf(resHint, sizeof(resHint),
+                     "实际录制：所选区域的原始尺寸（分辨率档位在区域模式下不生效）");
         }
         else
         {
-            snprintf(resHint, sizeof(resHint), "实际录制：跟随画面源分辨率（所选档位更大时不放大）");
+            UINT rw = 0, rh = 0;
+            RecordOutputSize(st.previewW, st.previewH, cfg.recResolution, rw, rh);
+            if (rw && rh)
+            {
+                if (rw != (st.previewW & ~1u) || rh != (st.previewH & ~1u))
+                    snprintf(resHint, sizeof(resHint), "实际录制：%u×%u（画面源 %u×%u，等比缩放）",
+                             rw, rh, st.previewW, st.previewH);
+                else
+                    snprintf(resHint, sizeof(resHint), "实际录制：%u×%u（原画，不做缩放）", rw, rh);
+            }
+            else
+            {
+                snprintf(resHint, sizeof(resHint),
+                         "实际录制：跟随画面源分辨率（所选档位更大时不放大）");
+            }
         }
         HintText(resHint);
     }
@@ -316,6 +551,7 @@ void DrawRecordPage(const UiContext& ctx)
         ImGui::Dummy(ImVec2(0.0f, Space::Xs));
         if (VolumeRow("sysvol", "音量", labelW, &cfg.sysVolume))
             SaveSettings(cfg);
+        ImGui::ProgressBar(st.sysLevel.load() / 100.0f, ImVec2(-1.0f, 6.0f), "");
     }
 
     // ---- 麦克风 ----
@@ -344,6 +580,7 @@ void DrawRecordPage(const UiContext& ctx)
         ImGui::Dummy(ImVec2(0.0f, Space::Xs));
         if (VolumeRow("micvol", "音量", labelW, &cfg.micVolume))
             SaveSettings(cfg);
+        ImGui::ProgressBar(st.micLevel.load() / 100.0f, ImVec2(-1.0f, 6.0f), "");
         HintText("两路同时开启会自动混音并压到同一条音轨；麦克风未做回声消除，外放时可能有回声");
     }
 
@@ -357,11 +594,19 @@ void DrawRecordPage(const UiContext& ctx)
 
     ImGui::Dummy(ImVec2(0.0f, Space::Xs));
     if (SecondaryButton("audiorefresh", "刷新设备列表",
-                        ImVec2(Control::BrowseBtn + 40.0f, Control::ButtonSm)))
+                        ImVec2(Control::BrowseBtn + 40.0f, Control::ButtonSm), nullptr))
     {
         g_sysPicker.Refresh(false);
         g_micPicker.Refresh(true);
-        st.SetToast(L"已重新枚举音频设备");
+        g_monPicker.valid = false;   // 显示器列表下次绘制时重枚举
+        st.SetToast(L"已重新枚举音频设备与显示器");
+    }
+    if (cfg.withMic)
+    {
+        ImGui::SameLine();
+        if (SecondaryButton("mictest", "试音 5 秒",
+                            ImVec2(Control::BrowseBtn + 40.0f, Control::ButtonSm), nullptr))
+            st.wantMicTest = true;
     }
 
     // ---- 音频码率（任一路开启才有意义）----
@@ -398,11 +643,42 @@ void DrawRecordPage(const UiContext& ctx)
     if (ToggleRow("cursor", "画面包含鼠标指针", &cfg.includeCursor))
     {
         SaveSettings(cfg);
-        st.SetToast(L"鼠标指针设置将在下次开始录制时生效");
+        st.wantCursorRefresh = true;
+        st.SetToast(L"鼠标指针设置已实时生效");
     }
 
     if (busy)
         ImGui::EndDisabled();
+
+    // 最近录制：放在 EndDisabled 之外，录制/保存中也能点开上一次的���件
+    if (!st.recentRecs.empty())
+    {
+        SectionDivider();
+        SectionTitle("最近录制");
+        int shown = 0;
+        for (const std::wstring& p : st.recentRecs)
+        {
+            if (shown >= 4)
+                break;
+            std::string name = WideToUtf8Str(p);
+            const size_t pos = name.find_last_of("\\/");
+            std::string base = (pos == std::string::npos) ? name : name.substr(pos + 1);
+            if (base.size() > 40)
+                base = base.substr(0, 40) + "…";
+            char rid[32] = {};
+            snprintf(rid, sizeof(rid), "recent_rec_%d", shown);
+            if (SecondaryButton(rid, base.c_str(),
+                                ImVec2(ImGui::GetContentRegionAvail().x, Control::ButtonSm),
+                                nullptr))
+            {
+                if (!RevealInExplorer(p))
+                    st.errPopup = "无法定位文件，可能已被移动或删除";
+            }
+            ++shown;
+        }
+        HintText("点击定位到文件");
+    }
+
     ImGui::EndChild();   // 配置区结束
 
     // ---- 输出概要 ----
@@ -410,46 +686,82 @@ void DrawRecordPage(const UiContext& ctx)
     std::string pathText = WideToUtf8Str(EllipsizePath(PreviewRecordPath(cfg), 38));
     snprintf(summary, sizeof(summary), "输出：%s", pathText.c_str());
     HintText(summary);
-    UINT estW = 0, estH = 0;
-    RecordOutputSize(st.previewW, st.previewH, cfg.recResolution, estW, estH);
-    if (!estW || !estH)   // 画面尺寸未知时按档位标称尺寸估算
+    // 区域模式的输出尺寸由框选决定，无法预知，故不给具体数字；
+    // 码率仍按分辨率推导，这里只说明会落在哪个量级，避免出现与文件不符的估计
+    if (regionMode)
     {
-        // 标称尺寸与 RecordOutputSize 的档位表保持一致，避免预估与实际不符
-        static const unsigned kNominal[RecResCount][2] = {
-            { 0, 0 }, { 1920, 1080 }, { 1280, 720 }, { 2560, 1440 }, { 3840, 2160 }
-        };
-        const int idx = (cfg.recResolution >= 0 && cfg.recResolution < RecResCount)
-                            ? cfg.recResolution : RecResNative;
-        estW = kNominal[idx][0];
-        estH = kNominal[idx][1];
-        if (!estW || !estH)   // 原画档无标称尺寸，画面源未知时按 1080p 粗估
-        {
-            estW = 1920;
-            estH = 1080;
-        }
+        snprintf(summary, sizeof(summary),
+                 "体积预估：按所选区域尺寸与实际码率计算（码率随区域分辨率自动调整）");
+        HintText(summary);
     }
-    // 码率与录制入口共用 ResolveRecordBitrateMbps，否则预估体积会与实际文件不符
-    const int estBr = ResolveRecordBitrateMbps(cfg, estW, estH);
-    snprintf(summary, sizeof(summary), "预计约 %lld MB / 小时（%u×%u @ %d fps，%d Mbps）",
-             (long long)(estBr * 1000LL * 3600 / 8 / 1024 / 1024), estW, estH, cfg.fps, estBr);
-    HintText(summary);
+    else
+    {
+        UINT estW = 0, estH = 0;
+        RecordOutputSize(st.previewW, st.previewH, cfg.recResolution, estW, estH);
+        if (!estW || !estH)   // 画面尺寸未知时按档位标称尺寸估算
+        {
+            // 标称尺寸与 RecordOutputSize 的档位表保持一致，避免预估与实际不符
+            static const unsigned kNominal[RecResCount][2] = {
+                { 0, 0 }, { 1920, 1080 }, { 1280, 720 }, { 2560, 1440 }, { 3840, 2160 }
+            };
+            const int idx = (cfg.recResolution >= 0 && cfg.recResolution < RecResCount)
+                                ? cfg.recResolution : RecResNative;
+            estW = kNominal[idx][0];
+            estH = kNominal[idx][1];
+            if (!estW || !estH)   // 原画档无标称尺寸，画面源未知时按 1080p 粗估
+            {
+                estW = 1920;
+                estH = 1080;
+            }
+        }
+        // 码率与录制入口共用 ResolveRecordBitrateMbps，否则预估体积会与实际文件不符
+        const int estBr = ResolveRecordBitrateMbps(cfg, estW, estH);
+        snprintf(summary, sizeof(summary), "预计约 %lld MB / 小时（%u×%u @ %d fps，%d Mbps）",
+                 (long long)(estBr * 1000LL * 3600 / 8 / 1024 / 1024), estW, estH, cfg.fps, estBr);
+        HintText(summary);
+    }
 
     // ---- 主控制按钮 ----
     char hkText[48] = {};
     strncpy_s(hkText, WideToUtf8Str(ctx.hotkeyRecord).c_str(), _TRUNCATE);
     float bw = ImGui::GetContentRegionAvail().x;
 
-    if (saving)
+    if (st.countdownActive)
+    {
+        const ULONGLONG nowCd = GetTickCount64();
+        const long long remain = st.countdownEnd > nowCd
+            ? (long long)(st.countdownEnd - nowCd + 999) / 1000 : 0;
+        if (PrimaryButton("cancelcd", "取消开始", ImVec2(bw, btnH), Pal::Warning(), nullptr))
+            st.wantCancelCountdown = true;
+        char cd[64] = {};
+        snprintf(cd, sizeof(cd), "%lld 秒后开始录制…", remain > 0 ? remain : 0);
+        HintText(cd);
+    }
+    else if (saving)
     {
         // 保存期间不可交互。禁用态不应带「危险」语义，且 PrimaryButton 在
         // enabled=false 时底色会被覆写为 Disabled，这里直接传 Disabled 以免误导读参者
         PrimaryButton("stop", "正在保存…", ImVec2(bw, btnH), Pal::Disabled(), nullptr, false);
-        HintText("正在写入文件尾部，请勿关闭程序");
+        HintText("正在后台写入文件尾部，可继续使用界面（不要退出程序）");
     }
     else if (recording)
     {
-        if (PrimaryButton("stop", "停止录制", ImVec2(bw, btnH), Pal::Danger(), hkText))
+        const float bw2 = (bw - Space::Md) * 0.5f;
+        if (st.paused)
+        {
+            if (PrimaryButton("resume", "继续", ImVec2(bw2, btnH), Pal::Success(), hkText))
+                st.wantResume = true;
+        }
+        else
+        {
+            if (SecondaryButton("pause", "暂停", ImVec2(bw2, btnH), nullptr))
+                st.wantPause = true;
+        }
+        ImGui::SameLine(0.0f, Space::Md);
+        if (PrimaryButton("stop", "停止", ImVec2(bw2, btnH), Pal::Danger(), hkText))
             st.wantStopRecord = true;
+        if (st.paused)
+            HintText("已暂停：画面与声音都不再写入文件");
     }
     else
     {

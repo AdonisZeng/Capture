@@ -14,6 +14,8 @@ enum class TrayAction
     Record,     // 开始/停止录制
     Settings,   // 打开设置（跳到"关于与设置"）
     Quit,       // 退出程序
+    Pause,      // 暂停/继续录制（仅录制中有效）
+    OpenDir,    // 打开输出目录
 };
 
 class TrayIcon
@@ -27,6 +29,8 @@ public:
 
     // 更新提示文字与图标颜色（录制中显示红点）
     void Update(const std::wstring& tooltip, bool recording);
+    // 暂停态（录制中有效）：菜单文案在 暂停/继续 之间切换
+    void SetPaused(bool paused) { paused_ = paused; }
     // 气泡通知（title/msg 为 UTF-16 文本）
     void Notify(const std::wstring& title, const std::wstring& msg);
 
@@ -44,5 +48,6 @@ private:
     HICON       iconRecording_ = nullptr;
     std::wstring tip_;
     bool        recording_ = false;
+    bool        paused_ = false;   // 录制暂停态（菜单文案用）
     bool        added_ = false;
 };

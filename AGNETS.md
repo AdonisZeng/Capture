@@ -31,7 +31,7 @@ Windows 桌面录屏应用：捕获主显示器画面 + 可选的系统声音/�
 | `src/ui/ui_theme.h/.cpp` | 主题：深/浅色配色、间距与控件尺寸常量、字体槽位 |
 | `src/settings/settings.h/.cpp` | 用户设置（UTF-8 JSON，原子写入）：目录/文件名模板/帧率/画质/音频（含两路开关、设备 ID、增益）/快捷键/界面/自启动意愿 |
 | `src/graphics/graphics.h/.cpp` | D3D11 设备 + 交换链封装（Init/Resize/BeginFrame/Present） |
-| `src/capture/capture.h/.cpp` | `ScreenCapture`：WGC 捕获封装，工作线程回调输出最新帧 BGRA 纹理 + 100ns 时间戳 |
+| `src/capture/capture.h/.cpp` | `ScreenCapture`：WGC 捕获封装（`StartForMonitor`/`StartForWindow` + 内部共用的 `StartWithItem`），工作线程回调输出最新帧 BGRA 纹理 + 100ns 时间戳；`EnumerateMonitors/FindMonitor/EnumerateWindows` 供画面来源选择器使用 |
 | `src/screenshot/screenshot.h/.cpp` | `GrabLatestFrame`（纹理→CPU BGRA）/ `CropImage`（按像素矩形裁剪）/ `SaveImage`（WIC，PNG·JPEG·BMP·TIFF·GIF）/ 格式表（`ShotFormatExt`·`ShotFormatLabel`·`StripImageExtension`）/ `CopyToClipboard`（CF_DIB） |
 | `src/screenshot/snipping.h/.cpp` | `RunSnipping`：全屏置顶分层窗口遮罩，冻结帧上拖拽框选；单击=整屏，Esc/右键取消 |
 | `src/recorder/recorder.h/.cpp` | `Recorder`：MF SinkWriter 封装，码率/硬件加速/音频码率可配；视频走系统内存路径，GPU 回读为立即上下文拷贝 + 双暂存错帧阻塞 Map；`WriteVideoFrame`/`WriteAudio`/`Stop`（Finalize 可能阻塞数秒）/`ReleaseDeviceResources` |
@@ -42,7 +42,6 @@ Windows 桌面录屏应用：捕获主显示器画面 + 可选的系统声音/�
 | `src/core/appicon.h/.cpp` | 应用图标加载（exe 资源 IDI_CAPTURE） |
 | `src/core/autostart.h/.cpp` | 开机自启动：HKCU Run 注册表读写；启用时始终写当前 exe 路径，供启动时自愈 |
 | `src/core/log.h/.cpp` | 日志模块：写入 log/ 目录下按启动时间命名的 TXT，多线程安全 |
-| `.trae/documents/capture-core-recording-plan.md` | 核心录制版实施计划与设计决策记录 |
 
 ## 架构与线程模型
 
@@ -54,7 +53,9 @@ Windows 桌面录屏应用：捕获主显示器画面 + 可选的系统声音/�
      → 按录制开始时的路由决定去向：单路直通 `WriteAudio`，两路则 `g_mixer.Push`，
      由混音器在采集线程内合成一条 PCM 后回调 `WriteAudio`。
 - 时间戳统一使用 100ns 单位（QPC/MFGetSystemTime 同一时钟基准），录制起始时刻 `baseTime` 做归零。
-- 停止录制分两阶段：Phase1 快速停写入（UI 立即显示"正在保存"），Phase2 帧末阻塞执行 `Finalize`。
+- 暂停：音视频回调直接丢帧，恢复时 `baseTime += 暂停时长`，时间轴无缝（暂停段被剪掉）。
+- 停止录制分两阶段：Phase1 快速停写入（UI 立即显示"正在保存"），Phase2 首帧起工作线程
+  执行 `Finalize`（阻塞数秒），完成后主循环回收线程并 Toast；退出/设备丢失都等 saving 清零。
 - 音频启动失败不阻断视频录制，仅 UI 橙色提示；两路各自独立，一路失败只丢该路。
 
 ## 重要约定 / 踩坑记录
@@ -163,6 +164,35 @@ Windows 桌面录屏应用：捕获主显示器画面 + 可选的系统声音/�
 - 用 Visual Studio 打开 `Capture.slnx`（或 msbuild `Capture.vcxproj`），选 x64 配置编译。
 - 输出为 Win32 GUI 程序（`wWinMain`），运行后主显示器预览常开，默认输出路径为 `桌面\录制_yyyyMMdd_HHmmss.mp4`。
 
+### 本机工具链位置（不在 PATH，也不在默认安装路径）
+
+Visual Studio 装在 **D 盘**，所以 `where msbuild` / `where cl` 一律找不到，
+`C:\Program Files*\Microsoft Visual Studio` 下只有 Installer（没有 C++ 工具链）。
+实际可用路径：
+
+| 用途 | 路径 |
+| --- | --- |
+| MSBuild（命令行编译首选，amd64） | `D:\Software\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\amd64\MSBuild.exe` |
+| 环境初始化脚本 | `D:\Software\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat` |
+| `cl.exe`（v145 工具集） | `D:\Software\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\cl.exe` |
+| Windows SDK 头文件（核对 API 用） | `C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0` |
+
+命令行编译（工作目录为仓库根）：
+
+```powershell
+& 'D:\Software\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\amd64\MSBuild.exe' `
+  Capture.vcxproj /p:Configuration=Release /p:Platform=x64 /v:minimal /nologo
+```
+
+要点：
+
+- **`v145` 工具集只存在于 MSBuild 侧目录 `MSBuild\Microsoft\VC\`（那里有 v150/v160/v170/v180，没有 v145）；
+  MSVC 编译器本体在 `VC\Tools\MSVC\14.51.36231`（另有旧版 14.29.30133）。两者版本号不对应，
+  不要按 `VC\Tools\MSVC\` 下的数字去拼工具集名。**
+- 工程里 `WindowsTargetPlatformVersion` 写的是 `10.0`（跟随最新已装 SDK），
+  本机实装 10.0.26100.0 与 10.0.28000.0。
+- 想直接调 `cl.exe` 必须先跑 `vcvars64.bat`，否则 `INCLUDE`/`LIB` 为空、WinRT 与 WIC 头都找不到。
+
 ## 截屏链路（区域 / 全屏合一）
 
 - 单一入口（按钮或热键）→ `BeginShot`：主窗口可见时先 `SW_HIDE`，等 WGC 送来 2 帧新画面
@@ -176,6 +206,43 @@ Windows 桌面录屏应用：捕获主显示器画面 + 可选的系统声音/�
 
 ## 变更记录（只记功能级变更，小修不记）
 
+- 2026-10-04 P1+P2（Debug/Release ×64 重建通过）：
+  - **暂停/继续**：`AppState::paused` + 主循环 `wantPause/wantResume`，
+    回调层丢帧、恢复时 `baseTime += 暂停时长`（暂停段被剪掉，混音器按跳变自愈）；
+    录屏页暂停时双按钮（继续/停止），状态栏/托盘/预览计时经 `RecElapsedSec` 同源扣除暂停段；
+    录制热键在暂停态按一次=继续，托盘菜单增“暂停/继续”项。
+  - **画面来源**：录屏页新增来源下拉（显示器/窗口/区域）；
+    `capture` 新增 `EnumerateMonitors/FindMonitor/EnumerateWindows` 与
+    `StartForMonitor/StartForWindow`（公共会话逻辑下沉 `StartWithItem`）；
+    显示器按设备名持久化（拔出回退主显示器），窗口为会话内 HWND（关闭则中止录制），
+    区域在开始时复用框选、按裁剪区原分辨率录制（`Recorder::Init` 新增 `crop` 参数，
+    暂存按裁剪尺寸建、`ConsumeStagedFrame` 改传有效像素）。
+    来源切换经 `wantCaptureRestart` 在空闲时重启预览；`RecoverFromDeviceLost` 同走新入口。
+  - **延时开始**：设置 `recDelaySec`（立即/3/5/10 秒），倒计时显示在录制按钮区，
+    再按一次开始键/停止键取消；切换画面来源自动取消倒计时。
+  - **画质预设**：清晰优先（原画60fps自动）/均衡（1080P30fps自动）/小体积（720P30fps8M）。
+  - **录后动作**：`openFolderAfterRec` 开关，异步保存完成后 `RevealInExplorer`。
+  - **异步保存**：`StopRecordingPhase2` 首帧起线程跑 `Finalize`，主循环轮询
+    `g_saveDone` 后 join 收尾；保存期间界面不卡，退出/设备丢失照常等待收尾。
+  - **电平表**：`AudioCapture::Level()`（真实包峰值+150ms 衰零，试音/录制共用），
+    主循环 20fps 刷到 `AppState::sysLevel/micLevel`，录屏页两路音量下滑条显示；
+    新增空闲“试音 5 秒”（只采电平不写文件，开始录制自动顶掉）。
+  - **框选放大镜+微调**：遮罩拖拽时光标旁 8 倍放大镜（十字线+自动避让选区），
+    方向键 1px 微调（Shift=10px），回车确认。
+  - **历史**：截图/录制各记最近 8 条（会话内），两页底部最多 4 个定位按钮。
+  - **小修**：窗口外框尺寸 `WM_EXITSIZEMOVE` 回存；光标开关经 `wantCursorRefresh`
+    实时刷到 WGC 会话；托盘增“打开输出目录”；Toast 4s→5s。
+- 2026-10-04 P0 健壮性三件套（Debug/Release ×64 重建通过）：
+  - **尾帧刷入**：`Recorder::StopLocked` 在 `Finalize` 前调新增 `FlushPendingFrame()`，
+    把双暂存里压着的最后一帧送编码，否则尾部恒丢一帧且音频尾比视频长。
+    另加 `lastAudioTs_/audioHasData_` 对音频 `WriteSample` 时间戳做单调钳位，
+    防静音保活块与真实包交错时倒退报 `MF_E_INVALIDREQUEST`。
+  - **静音保活**：`AudioCapture::ThreadProc` 空闲超 20ms 即补一块 960 帧静音
+    （QPC 时间戳+单调化）。Loopback 无播放时本来 0 包，单路直通音轨会出空洞；
+    补后混音路由也不再因一路静默频繁触发 200ms 停摆剔除。
+  - **磁盘预检+录中保护**：新增 `core/util::GetFreeDiskBytes`；
+    `StartRecording` 按“2 分钟预估”预检（<100MB 拒绝，<500MB/不足 2 分钟 Toast 警告），
+    录制中每 2s 轮询一次，<100MB 自动走标准停止并弹窗，避免 0 字节残文件。
 - 2026-10-04 TDR 根因纠正 + 设备丢失进程内恢复：本机"录制开始即 TDR"的真正根因是
   10-03 读回管线引入的延迟上下文拷贝 + DO_NOT_WAIT 轮询（纯软编同样崩，第 5~6 帧，
   与 AMD 硬编 MFT 无关，推翻同日早前的"硬编干崩驱动"结论）；回读改为立即上下文 +
@@ -231,7 +298,54 @@ Windows 桌面录屏应用：捕获主显示器画面 + 可选的系统声音/�
   启动时按配置意愿自愈（exe 位置变化/值丢失自动重写）；开关态每帧读注册表真实状态。
 - v1.0 前（阶段性）：UI 拆分至 `src/ui/`（页面/控件库/主题）；设置持久化 `settings.json`；
   全局快捷键 + 托盘驻留；全屏遮罩框选截图链路（见「截屏链路」节）。
+- 2026-10-04 审查问题修复（11 项；Debug/Release ×64 全量重建通过）：
+  - 区域录制的界面预估与实际同源：`CapRegion` 时分辨率档位实际不生效（`Recorder::Init`
+    用裁剪区覆盖 `outW/outH`），故录屏页把分辨率下拉置灰并改提示文案；底部体积预估
+    改为「按所选区域尺寸计算」，不再报一个与文件不符的数字。预设仍可用（帧率/码率生效）。
+  - 截屏页「最近截图」计入 `MeasureFooterHeight`（新增 `FooterMetrics::historyRows`）：
+    此前追加在固定区之后却不预留高度，卡片内容溢出、child 长出滚动条，缩略图与底部
+    固定区的比例关系失效。显示行数由 `HistoryRowCount()` 统一给出，避免测量与绘制写死不同值。
+  - 「最近录制」移出 `BeginDisabled` 作用域：录制/保存中也能点开上一次的成片。
+  - 裁剪区钳位补 `min(copyW, outW_)` / `min(copyH, outH_)`：`Init` 已把裁剪夹到源尺寸内，
+    该分支当前不可达，但一旦触发，`ConsumeStagedFrame` 慢路径会按 `copyW*4` 写出超过
+    `dstStride` 的行、末行越过 MF 缓冲末尾。
+  - `AppState::baseTime` 改 `std::atomic<long long>`：暂停恢复会在录制中途改写它，
+    而 WGC 帧回调线程与音频线程都在读，普通 `long long` 属数据竞争。
+  - 区域框选改为与截图同构的两阶段（`RecPhase::WaitRegionFrame` + 主循环轮询），
+    不再用 `Sleep` 阻塞消息循环，避免窗口进入「未响应」。补齐与之冲突的动作：等帧期间的
+    截图/试音被拦下并提示，换来源、退出、再次按开始都会作废该阶段并把隐藏的窗口放回来
+    （帧号已丢弃，无法继续推进）。
+  - `StartPreviewCapture` 回退到主显示器时一并把 `captureSource` 复位为 `CapMonitor`
+    并落盘，界面状态与实际预览一致；录屏页在窗口失效时给出橙色提示。
+  - 主题补 `ImGuiCol_PlotHistogram/Hovered`：`ProgressBar` 取的是 PlotHistogram 而非
+    PlotLines，此前电平条用 ImGui 默认色渲染，深浅主题下都不协调。
+  - `EnumerateWindows` 结果按标题排序（标题相同再按句柄）：`EnumWindows` 返回 Z 序，
+    界面里表现为顺序随机。
+  - 移除已删除的 `.trae/documents/capture-core-recording-plan.md` 引用。
+- 2026-10-04 复审问题修复（6 项；Debug/Release ×64 全量重建通过）：
+  - **等帧期间的截图拦截是死代码**：拦截块排在 `if (g_st.wantShot)` 之后，而后者会无条件
+    清掉 `wantShot` 并直接 `BeginShot()`。区域框选等帧期按截图热键会先弹一层截图遮罩，
+    紧接着同一轮主循环再弹一层区域遮罩（两层顺序叠加，而非注释描述的「先拦下」）。
+    已把拦截块前移到 `BeginShot` 之前。
+  - **设备恢复时区域阶段只作废、不还原窗口**：`RecoverFromDeviceLost` 里
+    `g_recPhase = RecPhase::None` 漏了 `RestoreWindowAfterRegion()`，与其余三处作废点
+    不一致。设备丢失恰好落在「已 `SW_HIDE` 主窗口、等区域帧」的 ≤400ms 窗口内时，
+    主窗口会永久停在 `SW_HIDE`（界面还在渲染到隐藏窗口，用户只能走托盘唤回）。
+  - **试音失败不释放麦克风**：`StartMicTest` 中 `Open` 已把句柄挂到 `AudioCapture` 上，
+    `Start` 失败时直接 return，而 `g_micTestActive` 仍为 false ——
+    5 秒超时回收与 `StartRecording` 的「先停掉试音」都不会来，句柄一直挂到下次
+    `Open`/进程退出。补 `g_micAudio.Stop()`。
+  - **窗口被关后预览不会自动回退**：`StartPreviewCapture` 的回退分支只在启动与
+    `wantCaptureRestart`（换来源/选窗口）时触发；空闲期目标窗口被关，没有任何东西触发它，
+    预览永久冻结在最后一帧、按开始录制只会弹「所选窗口已关闭」。主循环新增检测：
+    空闲 + `CapWindow` + `capWindow` 非空且已失效 → 置 `wantCaptureRestart`，
+    复用既有回退路径（回退成功后 `capWindow` 清空 + `captureSource` 变 `CapMonitor`，
+    条件自然不再命中，不会每帧重试）。录屏页提示文案同步改为「将回退到显示器」。
+  - `WM_EXITSIZEMOVE` 补 `IsZoomed` 判断：双击标题栏最大化同样会走一次 EXITSIZEMOVE，
+    原先会把整屏尺寸当成外框尺寸存进 `windowW/windowH`，下次启动还原成「几乎全屏」。
+  - 删除已无调用方的 `ScreenCapture::Start`（`main.cpp` 一律走
+    `StartPreviewCapture` → `StartForMonitor/StartForWindow`），避免捕获层多一个入口。
 
 ## 后续规划（未实现）
 
-选区遮罩录制、框选后再调整（拖动/缩放手柄）、放大镜辅助精确框选、麦克风回声消除（AEC）。
+框选后手柄调整（拖动/缩放已选区）、麦克风回声消除（AEC）。

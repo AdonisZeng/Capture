@@ -17,6 +17,14 @@ bool g_bufInit = false;
 // 格式下拉的选项直接取自编码器能力表（screenshot），避免界面与实际可写格式两处维护
 const char* g_formatItems[ShotFormatCount] = {};
 
+// 历史列表最多显示几行（PushRecent 最多存 8 条，这里只露最近 4 条）。
+// MeasureFooterHeight 与实际绘制都要用这个数，故单独提出，避免两处写死不同值
+int HistoryRowCount(size_t total)
+{
+    constexpr int kMaxRows = 4;
+    return total < (size_t)kMaxRows ? (int)total : kMaxRows;
+}
+
 void EnsureBufs(Settings& cfg)
 {
     if (g_bufInit)
@@ -123,10 +131,13 @@ void DrawCapturePage(const UiContext& ctx)
     const bool has = st.lastShot.Valid();
     const bool hasPath = !st.shotPath.empty();
 
-    // 底部为固定区（信息两行 + 按钮），缩略图吃掉剩余高度。
-    // 高度由 MeasureFooterHeight 按实际控件序列得出，不写死数值
+    // 底部为固定区（信息两行 + 按钮 + 历史列表），缩略图吃掉剩余高度。
+    // 高度由 MeasureFooterHeight 按实际控件序列得出，不写死数值。
+    // 历史列表必须计入（fm.historyRows），否则内容超出卡片高度，
+    // child 会长出滚动条、缩略图与底部区的比例关系也不再成立
     FooterMetrics fm;
     fm.hasSingleBtn = hasPath;
+    fm.historyRows = HistoryRowCount(st.recentShots.size());
     ImVec2 avail = ImGui::GetContentRegionAvail();
     constexpr float kMinThumbH = 100.0f;
     float thumbH = avail.y - MeasureFooterHeight(fm);
@@ -182,6 +193,34 @@ void DrawCapturePage(const UiContext& ctx)
         {
             if (!RevealInExplorer(st.shotPath))
                 st.errPopup = "无法定位文件，可能已被移动或删除";
+        }
+    }
+
+    const int histRows = HistoryRowCount(st.recentShots.size());
+    if (histRows > 0)
+    {
+        ImGui::Dummy(ImVec2(0.0f, Space::Md));
+        SectionTitle("最近截图");
+        int shown = 0;
+        for (const std::wstring& p : st.recentShots)
+        {
+            if (shown >= histRows)
+                break;
+            std::string name = WideToUtf8Str(p);
+            const size_t pos = name.find_last_of("\\/");
+            std::string base = (pos == std::string::npos) ? name : name.substr(pos + 1);
+            if (base.size() > 40)
+                base = base.substr(0, 40) + "…";
+            char rid[32] = {};
+            snprintf(rid, sizeof(rid), "recent_shot_%d", shown);
+            if (SecondaryButton(rid, base.c_str(),
+                                ImVec2(ImGui::GetContentRegionAvail().x, Control::ButtonSm),
+                                nullptr))
+            {
+                if (!RevealInExplorer(p))
+                    st.errPopup = "无法定位文件，可能已被移动或删除";
+            }
+            ++shown;
         }
     }
 

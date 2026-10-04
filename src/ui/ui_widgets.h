@@ -105,6 +105,9 @@ struct FooterMetrics
     bool  hasHintLine    = true;   // 小字路径/提示行
     bool  hasDoubleBtn   = true;   // 一行两个按钮
     bool  hasSingleBtn   = false;  // 追加的一行整宽按钮
+    // 追加的历史列表：标题 + extraRows 个整宽小按钮。
+    // 这类内容画在固定区之后，必须一并计入，否则会溢出卡片底部
+    int   historyRows    = 0;
 };
 
 float MeasureFooterHeight(const FooterMetrics& m);

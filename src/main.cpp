@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 #include <cstdio>
+#include <thread>
 
 #include "imgui.h"
 #include "imgui_impl_win32.h"
@@ -46,6 +47,12 @@ const wchar_t kMainWndClass[] = L"CaptureWndClass";
 // 第二个实例发给已有实例的唤醒消息（收到后恢复并显示主窗口）
 #define WM_CAPTURE_WAKE (WM_APP + 111)
 
+// 区域录制的两阶段流程与录制入口互相调用（RequestStartRecording 在选完区域后
+// 调 StartRecording，StartRecording 前的守卫又可能先进区域阶段），这里前置声明
+static void RestoreWindowAfterRegion();
+static bool PickRecordRegion();
+static void StartRecording();
+
 // ---------------------------------------------------------------------------
 // 全局对象
 // ---------------------------------------------------------------------------
@@ -69,6 +76,13 @@ enum class ShotPhase
     WaitFrame,  // 已隐藏主窗口，等待 WGC 送来不含本窗口的新帧
 };
 
+// 区域录制两阶段：与截图同理，等帧期间主循环照常转圈
+enum class RecPhase
+{
+    None,            // 空闲
+    WaitRegionFrame, // 已隐藏主窗口，等新帧后再弹区域框选遮罩
+};
+
 static ULONGLONG g_lastPreviewTick = 0;   // 预览节流
 static int       g_recSeq = 0;            // 同名文件序号
 static int       g_shotSeq = 0;
@@ -80,13 +94,29 @@ static ULONGLONG g_shotHideTick = 0;       // 隐藏主窗口的时刻
 static long long g_shotFrameMark = 0;      // 隐藏时的帧计数，用于判断新帧是否到达
 static bool      g_shotRestoreWin = false; // 框选结束后是否需要恢复主窗口
 
+// 异步保存：Finalize 阻塞数秒，扔到工作线程，主循环轮询完成
+static std::thread     g_saveThread;
+static bool            g_saveLaunched = false;  // 本轮 saving 是否已起线程
+static std::atomic<bool> g_saveDone { false };
+static std::wstring    g_lastRecPath;           // 本次录制文件（保存完成提示/历史/录后动作用）
+// 麦克风试音（空闲时）：打开设备 5 秒采电平，不写文件
+static bool      g_micTestActive = false;
+static ULONGLONG g_micTestUntil = 0;
+// 区域录制裁剪区（源像素坐标，RunSnipping 返回的帧坐标即源坐标）
+static RECT g_recCrop{};
+static bool g_recCropValid = false;
+static RecPhase g_recPhase = RecPhase::None;
+static long long g_recRegionMark = 0;    // 隐藏时的帧计数，用于判断新帧是否到达
+static ULONGLONG g_recRegionHideTick = 0; // 隐藏主窗口的时刻
+static bool g_recRegionRestoreWin = false; // 框选结束后是否需要恢复主窗口
+
 // ---------------------------------------------------------------------------
 // 捕获 / 音频回调（WGC 工作线程 / 音频采集线程）
 // ---------------------------------------------------------------------------
 static void OnCaptureFrame(ID3D11Texture2D* tex, long long ts100ns)
 {
     g_st.frameCount++;
-    if (g_st.recording)
+    if (g_st.recording && !g_st.paused)
     {
         long long t = ts100ns - g_st.baseTime;
         g_rec.WriteVideoFrame(tex, t > 0 ? t : 0);
@@ -107,7 +137,7 @@ static std::atomic<int> g_route { (int)AudioRoute::Off };
 
 static void WriteAudioToRecorder(const BYTE* data, UINT32 bytes, long long ts100ns)
 {
-    if (!g_st.recording)
+    if (!g_st.recording || g_st.paused)
         return;
     const long long t = ts100ns - g_st.baseTime;
     g_rec.WriteAudio(data, bytes, t > 0 ? t : 0);
@@ -182,6 +212,10 @@ static void UpdatePreview()
         g_st.previewW = w;
         g_st.previewH = h;
     }
+
+    // 电平表刷新（~20fps，供录屏页电平条与麦克风试音用）
+    g_st.sysLevel.store(g_sysAudio.Level());
+    g_st.micLevel.store(g_micAudio.Level());
 }
 
 // ---------------------------------------------------------------------------
@@ -270,6 +304,7 @@ static void DoShot()
         {
             saved = true;
             g_st.shotPath = path;
+            PushRecent(g_st.recentShots, path);
         }
         else
         {
@@ -303,6 +338,106 @@ static void DoShot()
 
     LOG_INFO(L"截图完成: %ux%u, 格式=%hs, 存盘=%d, 剪贴板=%d", g_st.lastShot.w, g_st.lastShot.h,
              ShotFormatShortName(fmt), saved ? 1 : 0, copied ? 1 : 0);   // %hs = char*
+}
+
+// ---------------------------------------------------------------------------
+// 预览捕获（按设置里的画面来源启动，区域录制用主显示器会话）
+// ---------------------------------------------------------------------------
+static bool StartPreviewCapture(std::wstring& err)
+{
+    if (g_cfg.captureSource == CapWindow)
+    {
+        if (IsWindow(g_st.capWindow))
+            return g_cap.StartForWindow(g_st.capWindow, g_gfx.Device(),
+                                        g_cfg.includeCursor, OnCaptureFrame, err);
+        LOG_WARN(L"所选窗口已不可用，预览回退到主显示器");
+        g_st.capWindow = nullptr;
+        g_st.capWindowTitle.clear();
+        // 来源一并复位：否则界面仍显示「窗口 / 尚未选择」，而预览已是主显示器，
+        // 下次开始录制还会直接报错，用户对不上状态
+        g_cfg.captureSource = CapMonitor;
+        SaveSettings(g_cfg);
+    }
+    HMONITOR hmon = FindMonitor(g_cfg.captureMonitorDevice);
+    return g_cap.StartForMonitor(hmon, g_gfx.Device(),
+                                g_cfg.includeCursor, OnCaptureFrame, err);
+}
+
+// ---------------------------------------------------------------------------
+// 区域录制：与截图同构的两阶段
+// 先隐藏主窗口（WaitRegionFrame，等新帧把本窗口摘干净），再在冻结帧上框选。
+// 等帧放在主循环里轮询而非 Sleep 阻塞：与截图链路一致，且不会让窗口进入「未响应」
+// ---------------------------------------------------------------------------
+
+// 框选结束后恢复主窗口：只有框选前窗口确实可见才需要恢复
+static void RestoreWindowAfterRegion()
+{
+    if (!g_recRegionRestoreWin)
+        return;
+    g_recRegionRestoreWin = false;
+    ShowWindow(g_hwnd, SW_SHOW);
+    SetForegroundWindow(g_hwnd);
+}
+
+// 弹出遮罩框选并把结果写入 g_recCrop。返回 false = 用户取消或无帧
+static bool PickRecordRegion()
+{
+    ImageBGRA img;
+    if (!GrabLatestFrame(g_cap, img))
+    {
+        LOG_ERR(L"区域录制: 无可用帧");
+        RestoreWindowAfterRegion();
+        g_st.SetToast(L"尚未捕获到画面，无法选择录制区域");
+        return false;
+    }
+    SnipSelection sel;
+    const bool ok = RunSnipping(GetModuleHandleW(nullptr), img, sel);
+    RestoreWindowAfterRegion();
+    if (!ok)
+    {
+        g_st.SetToast(L"已取消选择录制区域");
+        return false;
+    }
+    // 单击 = 整屏，此时等价于整屏录制，不启用裁剪
+    g_recCropValid = !sel.fullScreen;
+    if (g_recCropValid)
+        g_recCrop = sel.px;
+    return true;
+}
+
+// 请求开始录制：区域来源且主窗口可见时先进入等帧阶段，否则直接开录
+static void RequestStartRecording()
+{
+    g_recCropValid = false;
+    if (g_cfg.captureSource == CapRegion &&
+        IsWindowVisible(g_hwnd) && !IsIconic(g_hwnd))
+    {
+        g_recRegionMark = g_st.frameCount.load();
+        g_recRegionHideTick = GetTickCount64();
+        g_recRegionRestoreWin = true;
+        ShowWindow(g_hwnd, SW_HIDE);
+        g_recPhase = RecPhase::WaitRegionFrame;
+        return;
+    }
+    // 窗口本就不可见（托盘/最小化）：画面里没有本程序窗口，直接框选
+    if (g_cfg.captureSource == CapRegion)
+    {
+        if (!PickRecordRegion())
+            return;
+    }
+    StartRecording();
+}
+
+// 等帧阶段推进：帧到齐（或超时）后弹遮罩，成功则继续开录
+static void AdvanceRegionPhase()
+{
+    const ULONGLONG waited = GetTickCount64() - g_recRegionHideTick;
+    if (g_st.frameCount.load() < g_recRegionMark + 2 && waited < 400)
+        return;
+    g_recPhase = RecPhase::None;
+    if (!PickRecordRegion())
+        return;
+    StartRecording();
 }
 
 // ---------------------------------------------------------------------------
@@ -340,6 +475,27 @@ static void StartRecording()
     // 指针设置在本次录制生效
     g_cap.SetCursorCapture(g_cfg.includeCursor);
 
+    // 新一轮录制：清暂停/倒计时/试音状态（试音占着麦克风，先停掉再 Open）
+    g_st.paused = false;
+    g_st.pauseStartTs = 0;
+    g_st.pauseStartTick = 0;
+    g_st.pausedMsTotal = 0;
+    g_st.countdownActive = false;
+    if (g_micTestActive)
+    {
+        g_micTestActive = false;
+        g_micAudio.Stop();
+    }
+    g_st.micLevel.store(0);
+
+    // ---- 画面来源：窗口须有效；区域已在 RequestStartRecording/AdvanceRegionPhase 中框选 ----
+    if (g_cfg.captureSource == CapWindow && !IsWindow(g_st.capWindow))
+    {
+        g_st.errPopup = "所选窗口已关闭，请在录屏页重新选择窗口";
+        LOG_ERR(L"开始录制失败: 窗口句柄无效");
+        return;
+    }
+
     // ---- 音频：先探测两路可用性，再决定要不要给 MP4 建音轨 ----
     // 只在开启时打开设备，避免生成空的 AAC 轨；两路各自失败互不影响
     g_st.audioSysInfo.clear();
@@ -370,6 +526,7 @@ static void StartRecording()
     const bool withAudio = sysOk || micOk;
 
     // 分辨率档位 -> 实际编码尺寸（等比缩放、只缩不放）；码率取手动值或按分辨率自动
+    // 区域录制按裁剪区原分辨率录（忽略档位，Recorder::Init 内同样处理）
     UINT recW = 0, recH = 0;
     RecordOutputSize(w, h, g_cfg.recResolution, recW, recH);
     if (recW == 0 || recH == 0)
@@ -377,13 +534,59 @@ static void StartRecording()
         recW = w & ~1u;
         recH = h & ~1u;
     }
+    if (g_recCropValid)
+    {
+        recW = ((UINT)(g_recCrop.right - g_recCrop.left)) & ~1u;
+        recH = ((UINT)(g_recCrop.bottom - g_recCrop.top)) & ~1u;
+        if (recW < 2) recW = 2;
+        if (recH < 2) recH = 2;
+    }
     const int bitrate = ResolveRecordBitrateMbps(g_cfg, recW, recH);
 
+    // 磁盘预检：4K/48Mbps 一小时约 21GB，写爆盘只会得到 0 字节残文件。
+    // 未知录制时长，按“至少能录 2 分钟”估算；<100MB 直接拒绝，<500MB 放行但警告
+    {
+        ULONGLONG freeBytes = 0;
+        if (GetFreeDiskBytes(g_cfg.saveDir, freeBytes))
+        {
+            const ULONGLONG perMin =
+                ((ULONGLONG)(UINT)bitrate * 1000000ULL / 8 +
+                 (ULONGLONG)(UINT)(g_cfg.audioBitrate > 0 ? g_cfg.audioBitrate : 192) * 1000ULL / 8) * 60ULL;
+            const ULONGLONG kAbort = 100ULL * 1024 * 1024;
+            const ULONGLONG kNeed2Min = perMin * 2;
+            if (freeBytes < kAbort)
+            {
+                StopAudio();
+                LOG_ERR(L"开始录制失败: 磁盘剩余空间不足(%llu MB)", freeBytes / 1024 / 1024);
+                char msg[128];
+                snprintf(msg, sizeof(msg), "输出盘剩余空间不足（仅剩 %llu MB），无法开始录制",
+                         freeBytes / 1024 / 1024);
+                g_st.errPopup = msg;
+                return;
+            }
+            if (freeBytes < kNeed2Min || freeBytes < 500ULL * 1024 * 1024)
+            {
+                LOG_WARN(L"磁盘空间偏低: 剩余 %llu MB, 2 分钟预估需要 %llu MB",
+                         freeBytes / 1024 / 1024, kNeed2Min / 1024 / 1024);
+                char msg[160];
+                snprintf(msg, sizeof(msg), "磁盘剩余空间不多（%llu MB），长时间录制可能中途耗尽",
+                         freeBytes / 1024 / 1024);
+                g_st.SetToast(Utf8ToWide(msg));
+            }
+        }
+        else
+        {
+            LOG_WARN(L"磁盘剩余空间查询失败，跳过预检: %s", g_cfg.saveDir.c_str());
+        }
+    }
+
     std::wstring path = UniquePath(g_cfg.saveDir, g_cfg.recordPattern, L".mp4", g_recSeq);
+    g_lastRecPath = path;
     std::wstring err;
     if (!g_rec.Init(g_gfx.Device(), path.c_str(), w, h, recW, recH,
                     (UINT)g_cfg.fps, (UINT)bitrate, withAudio,
-                    g_cfg.hwEncode, g_cfg.audioBitrate, err))
+                    g_cfg.hwEncode, g_cfg.audioBitrate, err,
+                    g_recCropValid ? &g_recCrop : nullptr))
     {
         StopAudio();
         LOG_ERR(L"开始录制失败: %s", err.c_str());
@@ -439,11 +642,99 @@ static void StopRecordingPhase1()   // 快速路径：停止写入，UI 本帧�
     g_st.saving = true;
 }
 
-static void StopRecordingPhase2()    // 帧末执行：Finalize 阻塞数秒
+static void StopRecordingPhase2()    // 帧末执行：首帧起线程 Finalize，完成后收尾
 {
-    g_rec.Stop();
+    if (!g_saveLaunched)
+    {
+        g_saveLaunched = true;
+        g_saveDone.store(false);
+        // Finalize（编码器 flush）可能阻塞数秒，扔后台线程，主循环继续转圈
+        g_saveThread = std::thread([]() {
+            g_rec.Stop();
+            g_saveDone.store(true);
+        });
+        return;
+    }
+    if (!g_saveDone.load())
+        return;
+    if (g_saveThread.joinable())
+        g_saveThread.join();
+    g_saveLaunched = false;
     g_st.saving = false;
-    g_st.SetToast(L"录制已保存");
+    PushRecent(g_st.recentRecs, g_lastRecPath);
+    if (g_cfg.openFolderAfterRec && !g_lastRecPath.empty())
+    {
+        if (!RevealInExplorer(g_lastRecPath))
+            g_st.errPopup = "无法定位录制文件，可能已被移动或删除";
+        else
+            g_st.SetToast(L"录制已保存并打开文件位置");
+    }
+    else
+    {
+        g_st.SetToast(L"录制已保存");
+    }
+    LOG_INFO(L"录制保存完成: %s", g_lastRecPath.c_str());
+}
+
+static void PauseRecording()
+{
+    if (!g_st.recording || g_st.paused)
+        return;
+    g_st.pauseStartTs = MFGetSystemTime();
+    g_st.pauseStartTick = GetTickCount64();
+    g_st.paused = true;
+    g_st.SetToast(L"录制已暂停");
+    LOG_INFO(L"录制暂停");
+}
+
+static void ResumeRecording()
+{
+    if (!g_st.recording || !g_st.paused)
+        return;
+    // 时间轴前移暂停时长：暂停段被剪掉，音视频继续无缝
+    const long long pausedDur = MFGetSystemTime() - g_st.pauseStartTs;
+    if (pausedDur > 0)
+        g_st.baseTime += pausedDur;
+    g_st.pausedMsTotal += (long long)(GetTickCount64() - g_st.pauseStartTick);
+    g_st.pauseStartTick = 0;
+    g_st.paused = false;
+    g_st.SetToast(L"录制已继续");
+    LOG_INFO(L"录制继续: 暂停时长 %lld/100ns", pausedDur);
+}
+
+// 空闲时麦克风试音：只采电平不写文件，5 秒自动停
+static void OnMicTestData(const BYTE*, UINT32, long long) {}
+static void StartMicTest()
+{
+    if (g_st.IsBusy() || g_micTestActive)
+        return;
+    std::wstring err;
+    if (!g_micAudio.Open(AudioRole::Mic, g_cfg.micDevice, err))
+    {
+        g_st.errPopup = "麦克风不可用：" + WideToUtf8Str(err);
+        return;
+    }
+    if (!g_micAudio.Start(OnMicTestData))
+    {
+        // Open 已把设备句柄挂到 AudioCapture 上，只有 Stop 会释放；此处不收手的话
+        // g_micTestActive 仍是 false，超时回收与 StartRecording 的「先停掉试音」都不会来
+        g_micAudio.Stop();
+        g_st.errPopup = "麦克风试音启动失败";
+        return;
+    }
+    g_micTestActive = true;
+    g_micTestUntil = GetTickCount64() + 5000;
+    g_st.SetToast(L"正在试音（5 秒），对着麦克风说话…");
+}
+static void StopMicTest(bool quiet)
+{
+    if (!g_micTestActive)
+        return;
+    g_micTestActive = false;
+    g_micAudio.Stop();
+    g_st.micLevel.store(0);
+    if (!quiet)
+        g_st.SetToast(L"试音结束");
 }
 
 // ---------------------------------------------------------------------------
@@ -462,13 +753,17 @@ static void UpdateTray()
 {
     if (!g_tray.Valid())
         return;
+    g_tray.SetPaused(g_st.paused);
     wchar_t buf[128] = {};
     if (g_st.State() == RunState::Recording)
     {
-        long long sec = (long long)((GetTickCount64() - g_st.recordStartTick) / 1000);
-        if (sec < 0) sec = 0;
-        swprintf(buf, 128, L"Capture - 录制中 %lld:%02lld:%02lld",
-                 sec / 3600, (sec / 60) % 60, sec % 60);
+        const long long sec = RecElapsedSec(g_st);
+        if (g_st.paused)
+            swprintf(buf, 128, L"Capture - 已暂停 %lld:%02lld:%02lld",
+                     sec / 3600, (sec / 60) % 60, sec % 60);
+        else
+            swprintf(buf, 128, L"Capture - 录制中 %lld:%02lld:%02lld",
+                     sec / 3600, (sec / 60) % 60, sec % 60);
     }
     else if (g_st.State() == RunState::Saving)
     {
@@ -552,10 +847,14 @@ static bool RecoverFromDeviceLost()
                                                  g_st.lastShot.w, g_st.lastShot.h);
     }
 
-    // 7. WGC 用新设备重启（预览恢复常开）；失败不阻断程序，仅提示
+    // 7. WGC 用新设备重启（预览恢复常开，按当前画面来源）；失败不阻断程序，仅提示
     {
         std::wstring err;
-        if (!g_cap.Start(g_gfx.Device(), g_cfg.includeCursor, OnCaptureFrame, err))
+        g_recPhase = RecPhase::None;   // 恢复期间作废任何半途的区域框选
+        // 连同隐藏的主窗口一起放回来：其余作废 g_recPhase 的地方都配了这一次恢复，
+        // 漏掉会让主窗口一直停在 SW_HIDE（用户看不到界面，只能走托盘唤回）
+        RestoreWindowAfterRegion();
+        if (!StartPreviewCapture(err))
         {
             LOG_ERR(L"GPU 设备恢复: WGC 捕获重启失败: %s", err.c_str());
             g_st.errPopup = "图形设备已恢复，但屏幕捕获重启失败：" + WideToUtf8Str(err);
@@ -581,6 +880,28 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             g_gfx.Resize(LOWORD(lParam), HIWORD(lParam));
         return 0;
 
+    case WM_EXITSIZEMOVE:
+        // 记住窗口外框尺寸供下次启动还原（与 settings 的钳制范围一致）。
+        // 最大化时跳过：双击标题栏最大化同样会走一次 EXITSIZEMOVE，
+        // 那时取到的是整屏尺寸，会把下次启动的还原尺寸变成「几乎全屏」
+        if (!IsIconic(hWnd) && !IsZoomed(hWnd))
+        {
+            RECT wr{};
+            if (GetWindowRect(hWnd, &wr))
+            {
+                const int ww = (int)(wr.right - wr.left);
+                const int wh = (int)(wr.bottom - wr.top);
+                if (ww >= 900 && ww <= 3840 && wh >= 600 && wh <= 2160 &&
+                    (ww != g_cfg.windowW || wh != g_cfg.windowH))
+                {
+                    g_cfg.windowW = ww;
+                    g_cfg.windowH = wh;
+                    SaveSettings(g_cfg);
+                }
+            }
+        }
+        return 0;
+
     case WM_SYSCOMMAND:
         if ((wParam & 0xfff0) == SC_KEYMENU)
             return 0;   // 屏蔽 Alt 菜单键闪烁
@@ -597,8 +918,11 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             g_st.wantShot = true;   // 进入全屏框选（单击 = 整屏）
             break;
         case HK_RECORD_ID:
-            if (g_st.recording)    g_st.wantStopRecord = true;
-            else if (!g_st.saving) g_st.wantStartRecord = true;
+            if (g_st.saving)
+                break;
+            if (g_st.recording && g_st.paused)  g_st.wantResume = true;
+            else if (g_st.recording)            g_st.wantStopRecord = true;
+            else                                g_st.wantStartRecord = true;
             break;
         case HK_SHOW_ID:
             g_st.wantShowWindow = true;
@@ -623,8 +947,25 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             case TrayAction::Show:     g_st.wantShowWindow = true;  break;
             case TrayAction::Capture:  g_st.wantShot = true;         break;
             case TrayAction::Record:
-                if (g_st.recording)        g_st.wantStopRecord = true;
-                else if (!g_st.saving)     g_st.wantStartRecord = true;
+                if (g_st.saving)
+                    break;
+                if (g_st.recording && g_st.paused)  g_st.wantResume = true;
+                else if (g_st.recording)            g_st.wantStopRecord = true;
+                else                                g_st.wantStartRecord = true;
+                break;
+            case TrayAction::Pause:
+                if (g_st.recording && !g_st.paused) g_st.wantPause = true;
+                else if (g_st.recording)            g_st.wantResume = true;
+                break;
+            case TrayAction::OpenDir:
+                if (!g_cfg.saveDir.empty())
+                {
+                    if (GetFileAttributesW(g_cfg.saveDir.c_str()) == INVALID_FILE_ATTRIBUTES)
+                        g_st.errPopup = "输出目录不存在：" + WideToUtf8Str(g_cfg.saveDir);
+                    else
+                        ShellExecuteW(nullptr, L"open", g_cfg.saveDir.c_str(),
+                                      nullptr, nullptr, SW_SHOWNORMAL);
+                }
                 break;
             case TrayAction::Settings:  g_st.wantSettingsPage = true; break;
             case TrayAction::Quit:      g_st.wantQuit = true;        break;
@@ -778,10 +1119,10 @@ int WINAPI wWinMain(
     g_ui.Init(&g_st, &g_cfg, g_hwnd);
     ApplyHotkeys();
 
-    // ---- 屏幕捕获（预览常开）----
+    // ---- 屏幕捕获（预览常开，按设置的画面来源启动）----
     {
         std::wstring err;
-        if (!g_cap.Start(g_gfx.Device(), g_cfg.includeCursor, OnCaptureFrame, err))
+        if (!StartPreviewCapture(err))
         {
             LOG_ERR(L"屏幕捕获启动失败: %s", err.c_str());
             g_st.errPopup = WideToUtf8Str(err);
@@ -828,6 +1169,10 @@ int WINAPI wWinMain(
             }
             else
             {
+                // 区域框选期间：先作废该流程并把隐藏的窗口放回来，
+                // 否则窗口会一直保持不可见（帧号已丢弃，无法再推进）
+                g_recPhase = RecPhase::None;
+                RestoreWindowAfterRegion();
                 DestroyWindow(g_hwnd);   // 触发 WM_DESTROY -> PostQuitMessage
             }
             continue;
@@ -835,6 +1180,7 @@ int WINAPI wWinMain(
         if (g_quitPending && !g_st.IsBusy())
         {
             g_quitPending = false;
+            g_recPhase = RecPhase::None;
             DestroyWindow(g_hwnd);
             continue;
         }
@@ -878,9 +1224,9 @@ int WINAPI wWinMain(
         if (g_st.wantShowWindow)
         {
             g_st.wantShowWindow = false;
-            // 截图前隐藏主窗口的那几十毫秒内忽略恢复请求：提前显示会把窗口
+            // 截图/区域框选前隐藏主窗口的那几十毫秒内忽略恢复请求：提前显示会把窗口
             // 重新带回画面，框选底图里就会出现本程序窗口（框选结束后会自行恢复）
-            if (g_shotPhase == ShotPhase::None)
+            if (g_shotPhase == ShotPhase::None && g_recPhase == RecPhase::None)
                 ShowMainWindow();
         }
         if (g_st.wantSettingsPage)
@@ -888,6 +1234,14 @@ int WINAPI wWinMain(
             g_st.wantSettingsPage = false;
             g_ui.SetPage(2);
             ShowMainWindow();
+        }
+        // 必须排在 BeginShot 之前：下面那一段会无条件清掉 wantShot 并直接进框选，
+        // 拦在后面永远不生效（表现为「先弹一层截图遮罩，紧接着再弹一层区域遮罩」）
+        if (g_st.wantShot && g_recPhase != RecPhase::None)
+        {
+            // 区域框选中：截图的遮罩会与它抢全屏，先拦下（用户可稍后再截）
+            g_st.wantShot = false;
+            g_st.SetToast(L"正在选择录制区域，请先完成或取消");
         }
         if (g_st.wantShot)
         {
@@ -905,8 +1259,118 @@ int WINAPI wWinMain(
         if (g_st.wantStartRecord)
         {
             g_st.wantStartRecord = false;
-            StartRecording();
+            if (g_recPhase == RecPhase::WaitRegionFrame)
+            {
+                // 正在等区域框选：再按开始 = 取消，并把隐藏的窗口放回来
+                g_recPhase = RecPhase::None;
+                RestoreWindowAfterRegion();
+                g_st.SetToast(L"已取消选择录制区域");
+            }
+            else if (g_st.countdownActive)
+            {
+                // 倒计时中再按开始 = 取消
+                g_st.countdownActive = false;
+                g_st.SetToast(L"已取消延时开始");
+            }
+            else if (g_cfg.recDelaySec > 0 && !g_st.IsBusy())
+            {
+                g_st.countdownActive = true;
+                g_st.countdownEnd = GetTickCount64() + (ULONGLONG)g_cfg.recDelaySec * 1000;
+                wchar_t buf[64];
+                swprintf(buf, 64, L"%d 秒后开始录制，再按一次取消…", g_cfg.recDelaySec);
+                g_st.SetToast(buf);
+                LOG_INFO(L"延时开始: %d 秒", g_cfg.recDelaySec);
+            }
+            else
+            {
+                RequestStartRecording();
+            }
         }
+        if (g_st.wantCancelCountdown)
+        {
+            g_st.wantCancelCountdown = false;
+            if (g_st.countdownActive)
+            {
+                g_st.countdownActive = false;
+                g_st.SetToast(L"已取消延时开始");
+            }
+        }
+        if (g_st.countdownActive && !g_st.IsBusy())
+        {
+            if (GetTickCount64() >= g_st.countdownEnd)
+            {
+                g_st.countdownActive = false;
+                RequestStartRecording();
+            }
+        }
+        // 区域录制的等帧阶段（主循环轮询，不用 Sleep 阻塞）
+        if (g_recPhase == RecPhase::WaitRegionFrame)
+        {
+            // 录制请求已发起，此期间不接受停止（会与区域阶段语义冲突）
+            g_st.wantStopRecord = false;
+            AdvanceRegionPhase();
+        }
+        if (g_st.wantPause)
+        {
+            g_st.wantPause = false;
+            PauseRecording();
+        }
+        if (g_st.wantResume)
+        {
+            g_st.wantResume = false;
+            ResumeRecording();
+        }
+        // 窗口捕获空闲期间目标窗口被关闭：WGC 不再出帧，预览会永久冻结在最后一帧，
+        // 按开始录制又只会弹「所选窗口已关闭」而不会自动回退。主动走一遍
+        // StartPreviewCapture 的回退分支（复位来源到显示器 + 重启捕获），与启动时一致。
+        // 回退成功后 capWindow 被清空、captureSource 变成 CapMonitor，本段自然不再命中
+        if (g_recPhase == RecPhase::None && !g_st.IsBusy() &&
+            g_cfg.captureSource == CapWindow &&
+            g_st.capWindow != nullptr && !IsWindow(g_st.capWindow))
+        {
+            g_st.wantCaptureRestart = true;
+        }
+        if (g_st.wantCaptureRestart)
+        {
+            g_st.wantCaptureRestart = false;
+            if (g_st.countdownActive)
+            {
+                g_st.countdownActive = false;
+                g_st.SetToast(L"画面来源已变更，延时开始已取消");
+            }
+            // 换来源要重启捕获，正在等区域帧的流程必须先作废（隐藏的窗口也要放回来）
+            if (g_recPhase == RecPhase::None)
+            {
+                if (!g_st.IsBusy())
+                {
+                    std::wstring err;
+                    if (!StartPreviewCapture(err))
+                        g_st.errPopup = WideToUtf8Str(err);
+                    else
+                        g_st.SetToast(L"画面来源已切换");
+                }
+            }
+            else
+            {
+                g_recPhase = RecPhase::None;
+                RestoreWindowAfterRegion();
+                g_st.SetToast(L"画面来源已变更");
+            }
+        }
+        if (g_st.wantCursorRefresh)
+        {
+            g_st.wantCursorRefresh = false;
+            g_cap.SetCursorCapture(g_cfg.includeCursor);
+        }
+        if (g_st.wantMicTest)
+        {
+            g_st.wantMicTest = false;
+            // 区域框选期间会抢占麦克风打开（StartRecording 里），试音先让位
+            if (g_recPhase == RecPhase::None)
+                StartMicTest();
+        }
+        if (g_micTestActive && GetTickCount64() >= g_micTestUntil)
+            StopMicTest(false);
         // 录制过程中画面源尺寸变了（切分辨率 / 插拔显示器 / 旋转屏幕）：
         // 编码器已按旧尺寸配置，继续写会拉伸且每帧重建暂存纹理，故就地中止
         if (g_st.recording && g_rec.IsSrcSizeBroken())
@@ -914,10 +1378,24 @@ int WINAPI wWinMain(
             g_st.wantStopRecord = true;
             g_st.errPopup = "录制过程中画面尺寸发生变化（切换分辨率或旋转屏幕），本次录制已中止";
         }
+        // 窗口捕获时窗口被关了：不再有新帧，继续录只会得到冻结画面，就地中止
+        if (g_st.recording && g_cfg.captureSource == CapWindow && !IsWindow(g_st.capWindow))
+        {
+            g_st.wantStopRecord = true;
+            g_st.errPopup = "所选窗口已关闭，本次录制已中止";
+        }
         if (g_st.wantStopRecord)
         {
             g_st.wantStopRecord = false;
-            StopRecordingPhase1();
+            if (g_st.countdownActive)
+            {
+                g_st.countdownActive = false;
+                g_st.SetToast(L"已取消延时开始");
+            }
+            else
+            {
+                StopRecordingPhase1();
+            }
         }
         if (g_ui.ConsumeHotkeyDirty())
             ApplyHotkeys();
@@ -938,6 +1416,26 @@ int WINAPI wWinMain(
         {
             lastTrayTick = now;
             UpdateTray();
+        }
+
+        // ---- 录制中磁盘剩余检查（每 2s）：<100MB 就地中止，趁还有空间把已写帧 Finalize 进文件
+        {
+            static ULONGLONG lastDiskTick = 0;
+            if (g_st.recording && now - lastDiskTick >= 2000)
+            {
+                lastDiskTick = now;
+                ULONGLONG freeBytes = 0;
+                if (GetFreeDiskBytes(g_cfg.saveDir, freeBytes) &&
+                    freeBytes < 100ULL * 1024 * 1024)
+                {
+                    LOG_ERR(L"录制中磁盘耗尽(剩余 %llu MB)，自动停止以保住已录内容",
+                            freeBytes / 1024 / 1024);
+                    g_st.wantStopRecord = true;
+                    g_st.errPopup = "磁盘空间不足（仅剩不到 100MB），本次录制已自动停止";
+                }
+            }
+            if (!g_st.recording)
+                lastDiskTick = now;
         }
 
         // ---- UI 帧 ----
@@ -964,6 +1462,9 @@ int WINAPI wWinMain(
 
     // ---- 清理 ----
     LOG_INFO(L"消息循环结束, 开始清理资源");
+    // 异步保存线程兜底（正常退出时保存早已完成，此处 join 立即返回）
+    if (g_saveThread.joinable())
+        g_saveThread.join();
     SaveSettings(g_cfg);
     if (hSingleInstance) { CloseHandle(hSingleInstance); hSingleInstance = nullptr; }
     g_hotkey.Unregister();

@@ -363,11 +363,19 @@ void AudioCapture::ThreadProc()
 
     std::vector<BYTE> conv;    // 格式/声道转换输出缓冲
     std::vector<BYTE> silent;  // 静音填充
+    // Loopback 在播放端无活动时 GetNextPacketSize 恒为 0（Start 照样成功），
+    // 若什么都不送，单路直通时音轨会出现空洞、音画逐渐错位。空闲超阈值
+    // 就按 20ms 一块主动补静音，保持音轨连续（混音路由同样受益，不再频繁触发停摆剔除）
+    ULONGLONG lastDataTick = GetTickCount64();
+    constexpr ULONGLONG kIdleEmitMs = 20;
+    constexpr UINT32 kIdleFrames = 960;   // 20ms @48kHz
+    std::vector<BYTE> idleSilence((size_t)kIdleFrames * 4, 0);
 
     while (!stopFlag_)
     {
         Sleep(5);
         UINT32 packet = 0;
+        bool gotData = false;
         while (SUCCEEDED(capture_->GetNextPacketSize(&packet)) && packet > 0)
         {
             BYTE* data = nullptr;
@@ -450,9 +458,51 @@ void AudioCapture::ThreadProc()
                 onData_(out, outBytes, ts);
 
             capture_->ReleaseBuffer(frames);
+            gotData = true;
+
+            // 电平表：真实包才更新峰值（静音保活块不参与，否则响一声就被清零）
+            if (!(flags & AUDCLNT_BUFFERFLAGS_SILENT))
+            {
+                int peak = 0;
+                const INT16* s = (const INT16*)out;
+                const UINT32 n = outBytes / 2;
+                for (UINT32 i = 0; i < n; ++i)
+                {
+                    int v = s[i] < 0 ? -(int)s[i] : (int)s[i];
+                    if (v > peak)
+                        peak = v;
+                }
+                peak_ = peak;
+                peakTick_ = GetTickCount64();
+            }
+        }
+        if (gotData)
+        {
+            lastDataTick = GetTickCount64();
+        }
+        else if (onData_ && GetTickCount64() - lastDataTick >= kIdleEmitMs)
+        {
+            // 空闲保活：送一块静音，时间戳用块到达时刻（QPC）并做单调化
+            LARGE_INTEGER now{};
+            QueryPerformanceCounter(&now);
+            long long ts = (long long)(now.QuadPart * 10000000ULL / (UINT64)qpcFreq.QuadPart);
+            if (ts <= lastTs_)
+                ts = lastTs_ + 1;
+            lastTs_ = ts;
+            onData_(idleSilence.data(), (UINT32)idleSilence.size(), ts);
+            lastDataTick = GetTickCount64();
         }
     }
     LOG_INFO(L"音频采集线程退出");
+}
+
+int AudioCapture::Level() const
+{
+    if (GetTickCount64() - peakTick_.load() > 150)
+        return 0;
+    const int peak = peak_.load();
+    int pct = peak * 100 / 32768;
+    return pct > 100 ? 100 : pct;
 }
 
 void AudioCapture::Stop()
@@ -475,5 +525,6 @@ void AudioCapture::Stop()
     lastTs_ = 0;
     lastDeviceTs_ = 0;
     deviceClockUsable_ = true;
+    peak_ = 0;
     // COM 不再由本对象管理：Open 用作用域守卫，采集线程自带 ComScope
 }

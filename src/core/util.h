@@ -36,6 +36,8 @@ std::wstring FindDataDir(const wchar_t* name);
 std::wstring DesktopDir();
 // 确保目录存在（逐级 CreateDirectoryW）
 bool EnsureDir(const std::wstring& dir);
+// 取路径所在卷的可用字节数（GetDiskFreeSpaceEx）；失败返回 false（网络路径/权限不足时不阻断录制）
+bool GetFreeDiskBytes(const std::wstring& path, ULONGLONG& freeBytes);
 // 用系统「打开文件夹」资源管理器选中文件；失败返回 false
 bool RevealInExplorer(const std::wstring& file);
 

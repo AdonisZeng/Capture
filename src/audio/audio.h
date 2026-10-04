@@ -55,6 +55,8 @@ public:
     bool IsOpen()    const { return client_ != nullptr; }
     bool IsRunning() const { return running_; }
     const std::wstring& DeviceId() const { return deviceId_; }
+    // 最近一块的电平 0..100（超 150ms 无新数据视为静音回 0，供录屏页电平条用）
+    int Level() const;
 
 private:
     void ThreadProc();
@@ -74,4 +76,6 @@ private:
     bool deviceClockUsable_ = true;   // 设备的 qpcPos 是否可用（部分硬件恒不推进）
     long long lastDeviceTs_ = 0;      // 上一块的设备时间戳（用于检测是否推进）
     long long lastTs_ = 0;            // 上一块输出的时间戳（保证严格递增）
+    std::atomic<int> peak_ { 0 };         // 最近真实包的峰值（0..32767，电平表用）
+    std::atomic<ULONGLONG> peakTick_ { 0 };
 };

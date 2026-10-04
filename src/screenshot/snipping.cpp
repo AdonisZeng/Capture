@@ -29,7 +29,7 @@ constexpr int   kFontPx      = 14;
 constexpr int   kHintTop     = 28;
 
 const wchar_t   kSnipClass[] = L"CaptureSnipClass";
-const wchar_t   kHintText[]  = L"按住左键拖出截图区域 · 单击截取整个屏幕 · Esc 取消";
+const wchar_t   kHintText[]  = L"按住左键拖出区域 · 单击截全屏 · 方向键微调(Shift=10px) · 回车确认 · Esc 取消";
 
 // Esc 兜底轮询定时器：遮罩失焦后 WM_KEYDOWN 收不到 Esc，靠它保证任何焦点状态下都能取消
 constexpr UINT_PTR kEscTimerId = 1;
@@ -223,6 +223,45 @@ void Compose(SnipCtx& c)
         if (ly < c.monY + 4)
             ly = (s.bottom + 8 * c.dpi / 96);
         DrawTextBox(dc, c.hFont, text, s.left, ly, c);
+
+        // 6) 放大镜：光标附近 8 倍像素，便于把边框对齐到窗口边缘
+        {
+            const int scale = c.dpi / 96;
+            const int magPx = 144 * (scale > 0 ? scale : 1);
+            const int zoom = 8;
+            const int srcPx = magPx / zoom > 0 ? magPx / zoom : 1;
+            int fx = ToFrameX(c, c.ptNow.x);
+            int fy = ToFrameY(c, c.ptNow.y);
+            int sx = fx - srcPx / 2;
+            int sy = fy - srcPx / 2;
+            if (sx < 0) sx = 0;
+            if (sy < 0) sy = 0;
+            if (sx + srcPx > (int)c.frameW) sx = (int)c.frameW - srcPx;
+            if (sy + srcPx > (int)c.frameH) sy = (int)c.frameH - srcPx;
+            if (sx < 0) sx = 0;
+            if (sy < 0) sy = 0;
+            int dx = c.ptNow.x + 24 * (scale > 0 ? scale : 1);
+            int dy = c.ptNow.y + 24 * (scale > 0 ? scale : 1);
+            if (dx + magPx > c.monX + c.monW) dx = c.ptNow.x - magPx - 12;
+            if (dy + magPx > c.monY + c.monH) dy = c.ptNow.y - magPx - 12;
+            if (dx < c.monX) dx = c.monX;
+            if (dy < c.monY) dy = c.monY;
+            const int prevMode = SetStretchBltMode(dc, COLORONCOLOR);
+            StretchBlt(dc, dx, dy, magPx, magPx,
+                       c.hdcFrame, sx, sy, srcPx, srcPx, SRCCOPY);
+            SetStretchBltMode(dc, prevMode);
+            HPEN pen = CreatePen(PS_SOLID, 1, kAccent);
+            HGDIOBJ oldPen = SelectObject(dc, pen);
+            HGDIOBJ oldBr = SelectObject(dc, GetStockObject(NULL_BRUSH));
+            Rectangle(dc, dx, dy, dx + magPx, dy + magPx);
+            MoveToEx(dc, dx + magPx / 2, dy, nullptr);
+            LineTo(dc, dx + magPx / 2, dy + magPx);
+            MoveToEx(dc, dx, dy + magPx / 2, nullptr);
+            LineTo(dc, dx + magPx, dy + magPx / 2);
+            SelectObject(dc, oldBr);
+            SelectObject(dc, oldPen);
+            DeleteObject(pen);
+        }
     }
     else
     {
@@ -304,6 +343,34 @@ LRESULT CALLBACK SnipProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             c->dragging = false;
             c->canceled = true;
             c->done = true;
+            return 0;
+        }
+        // 方向键微调选区角点（Shift 步进 10px），回车直接确认
+        if (c->dragging || c->hasSel)
+        {
+            const int step = (GetAsyncKeyState(VK_SHIFT) & 0x8000) ? 10 : 1;
+            bool moved = false;
+            switch (wParam)
+            {
+            case VK_LEFT:  c->ptNow.x -= step; moved = true; break;
+            case VK_RIGHT: c->ptNow.x += step; moved = true; break;
+            case VK_UP:    c->ptNow.y -= step; moved = true; break;
+            case VK_DOWN:  c->ptNow.y += step; moved = true; break;
+            case VK_RETURN:
+                if (c->hasSel && !c->dragging)
+                {
+                    c->full = false;
+                    c->done = true;
+                }
+                return 0;
+            default: break;
+            }
+            if (moved)
+            {
+                UpdateSel(*c);
+                c->hasSel = true;
+                Compose(*c);
+            }
         }
         return 0;
 

@@ -274,7 +274,8 @@ std::wstring ProbeHardwareEncoderName()
 bool Recorder::Init(ID3D11Device* device, const wchar_t* path,
                     UINT srcW, UINT srcH, UINT outW, UINT outH,
                     UINT fps, UINT bitrateMbps, bool withAudio,
-                    bool hwEncode, int audioBitrateKbps, std::wstring& err)
+                    bool hwEncode, int audioBitrateKbps, std::wstring& err,
+                    const RECT* crop)
 {
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -288,6 +289,9 @@ bool Recorder::Init(ID3D11Device* device, const wchar_t* path,
     stageNext_ = 0;
     stageHasPending_ = false;
     stagedTs_ = 0;
+    pendingCopyW_ = pendingCopyH_ = 0;
+    useCrop_ = false;
+    cropX_ = cropY_ = cropW_ = cropH_ = 0;
     srcW_ = srcH_ = 0;
     srcSizeBroken_ = false;
     deviceLost_ = false;
@@ -297,6 +301,8 @@ bool Recorder::Init(ID3D11Device* device, const wchar_t* path,
     srcTexForSRV_ = nullptr;
     scale_ = false;
     videoFrames_ = audioBlocks_ = 0;
+    lastAudioTs_ = 0;
+    audioHasData_ = false;
     videoErrCount_ = audioErrCount_ = 0;
     videoErrTotal_ = audioErrTotal_ = 0;
     videoFirstLogged_ = audioFirstLogged_ = false;
@@ -327,17 +333,41 @@ bool Recorder::Init(ID3D11Device* device, const wchar_t* path,
         // H.264 要求宽高为偶数；目标非法或大于源（不允许放大）时按源尺寸录制
         const UINT srcEvenW = srcW & ~1u;
         const UINT srcEvenH = srcH & ~1u;
-        outW_ = outW & ~1u;
-        outH_ = outH & ~1u;
-        if (outW_ == 0 || outH_ == 0 || outW_ > srcEvenW || outH_ > srcEvenH)
-        {
-            outW_ = srcEvenW;
-            outH_ = srcEvenH;
-        }
         // 记下本次录制的源尺寸基准：WriteVideoFrame 据此判断画面是否中途变了
         srcW_ = srcEvenW;
         srcH_ = srcEvenH;
-        scale_ = (outW_ != srcEvenW) || (outH_ != srcEvenH);
+        if (crop && crop->right > crop->left && crop->bottom > crop->top)
+        {
+            // 区域录制：裁剪区夹到源内，按其原分辨率录制，不做 GPU 缩放
+            LONG x0 = crop->left < 0 ? 0 : crop->left;
+            LONG y0 = crop->top < 0 ? 0 : crop->top;
+            LONG x1 = crop->right > (LONG)srcEvenW ? (LONG)srcEvenW : crop->right;
+            LONG y1 = crop->bottom > (LONG)srcEvenH ? (LONG)srcEvenH : crop->bottom;
+            if (x1 > x0 && y1 > y0)
+            {
+                useCrop_ = true;
+                cropX_ = (UINT)x0 & ~1u;
+                cropY_ = (UINT)y0 & ~1u;
+                cropW_ = ((UINT)(x1 - x0)) & ~1u;
+                cropH_ = ((UINT)(y1 - y0)) & ~1u;
+                if (cropW_ < 2) cropW_ = 2;
+                if (cropH_ < 2) cropH_ = 2;
+                outW_ = cropW_;
+                outH_ = cropH_;
+                LOG_INFO(L"区域录制: 裁剪区 %u,%u %ux%u", cropX_, cropY_, cropW_, cropH_);
+            }
+        }
+        if (!useCrop_)
+        {
+            outW_ = outW & ~1u;
+            outH_ = outH & ~1u;
+            if (outW_ == 0 || outH_ == 0 || outW_ > srcEvenW || outH_ > srcEvenH)
+            {
+                outW_ = srcEvenW;
+                outH_ = srcEvenH;
+            }
+        }
+        scale_ = !useCrop_ && ((outW_ != srcEvenW) || (outH_ != srcEvenH));
         if (scale_ && !SetupScaler(device))
         {
             LOG_WARN(L"分辨率缩放不可用, 退回原始分辨率 %ux%u 录制", srcEvenW, srcEvenH);
@@ -451,11 +481,51 @@ void Recorder::Stop()
     StopLocked();
 }
 
+bool Recorder::FlushPendingFrame()
+{
+    if (!writer_ || !stageHasPending_)
+        return true;
+    ID3D11Texture2D* ready = stagingTex_[stageNext_ ^ 1].Get();
+    if (!ready)
+    {
+        stageHasPending_ = false;
+        return true;
+    }
+    Microsoft::WRL::ComPtr<ID3D11Device> dev;
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> ctx;
+    ready->GetDevice(dev.GetAddressOf());
+    if (!dev)
+    {
+        stageHasPending_ = false;
+        return false;
+    }
+    dev->GetImmediateContext(ctx.GetAddressOf());
+    if (!ctx)
+    {
+        stageHasPending_ = false;
+        return false;
+    }
+    D3D11_TEXTURE2D_DESC desc{};
+    ready->GetDesc(&desc);
+    const UINT copyW = pendingCopyW_ ? pendingCopyW_ : min(desc.Width, outW_);
+    const UINT copyH = pendingCopyH_ ? pendingCopyH_ : min(desc.Height, outH_);
+    // ConsumeStagedFrame 内部会把 stageHasPending_ 置 false，无论成败都视为已消费
+    if (!ConsumeStagedFrame(ctx.Get(), copyW, copyH))
+    {
+        LOG_WARN(L"尾帧刷入失败，文件尾部少一帧");
+        return false;
+    }
+    LOG_INFO(L"尾帧已刷入 (ts=%lld)", stagedTs_);
+    return true;
+}
+
 // 需持有 mutex_ 调用
 void Recorder::StopLocked()
 {
     if (writer_)
     {
+        // 双暂存错帧：最后一帧还压在 staging 里没送编码，不刷则尾部恒丢一帧
+        FlushPendingFrame();
         LOG_INFO(L"Recorder Stop: 写入统计: 视频帧=%lld, 音频块=%lld, 帧错误=%d, 音频错误=%d",
                  videoFrames_, audioBlocks_, videoErrTotal_, audioErrTotal_);
         LOG_INFO(L"Recorder Stop: 开始 Finalize (编码器 flush, 可能阻塞数秒)...");
@@ -474,6 +544,10 @@ void Recorder::StopLocked()
     stagingW_ = stagingH_ = 0;
     stageHasPending_ = false;
     stageNext_ = 0;
+    stagedTs_ = 0;
+    pendingCopyW_ = pendingCopyH_ = 0;
+    useCrop_ = false;
+    cropX_ = cropY_ = cropW_ = cropH_ = 0;
     scaledTex_.Reset();
     scaledRTV_.Reset();
     srcSRV_.Reset();
@@ -538,38 +612,66 @@ void Recorder::WriteVideoFrame(ID3D11Texture2D* tex, long long ts100ns)
     D3D11_TEXTURE2D_DESC desc{};
     workTex->GetDesc(&desc);
 
+    // 区域录制时暂存按裁剪输出尺寸建（否则每帧建一张全屏暂存），拷贝盒取裁剪区
+    D3D11_TEXTURE2D_DESC stageDesc = desc;
+    UINT boxX = 0, boxY = 0, copyW = 0, copyH = 0;
+    if (useCrop_)
+    {
+        stageDesc.Width = outW_;
+        stageDesc.Height = outH_;
+        boxX = cropX_ < desc.Width ? cropX_ : 0;
+        boxY = cropY_ < desc.Height ? cropY_ : 0;
+        copyW = cropW_;
+        copyH = cropH_;
+        if (boxX + copyW > desc.Width) copyW = desc.Width - boxX;
+        if (boxY + copyH > desc.Height) copyH = desc.Height - boxY;
+        // 暂存只有 outW_×outH_，有效像素绝不能超过它：ConsumeStagedFrame 慢路径
+        // 按 copyW*4 逐行写 dst（行距 = outW_*4），copyW 超过 outW_ 会写出行外，
+        // 末行还会越过 MF 缓冲末尾
+        copyW = min(copyW, outW_);
+        copyH = min(copyH, outH_);
+        if (copyW < 2 || copyH < 2)
+            return;
+    }
+    else
+    {
+        copyW = min(desc.Width, outW_);
+        copyH = min(desc.Height, outH_);
+    }
+
     // 双暂存纹理（CPU 可读）惰性创建，尺寸变化时成对重建
-    if (!EnsureStagingPair(dev.Get(), desc))
+    if (!EnsureStagingPair(dev.Get(), useCrop_ ? stageDesc : desc))
         return;
 
     // ---- 先读回上一帧拷进暂存的画面并送编码（stagedTs_ 是它的采集时刻）----
     // 错帧双缓冲：读的是上一帧的拷贝，GPU 已有一整帧时间完成，
     // 最普通的阻塞 Map 实际立即返回，既不占 D3D 全局锁卡 UI，
     // 也不依赖任何非常规调用形态（见 recorder.h 头部的 TDR 教训）
-    if (stageHasPending_ && !ConsumeStagedFrame(ctx.Get(), desc))
+    if (stageHasPending_ && !ConsumeStagedFrame(ctx.Get(), pendingCopyW_, pendingCopyH_))
         return;   // 设备/编码器已不可用，本帧不再拷贝
 
     // ---- 再把本帧拷进另一个暂存，留给下一帧读回 ----
     // 裁剪到编码尺寸（宽高向下取偶）。在立即上下文上下命令：
     // D3D11 多线程保护下与 UI 线程并发安全，单次拷贝微秒级
-    const UINT copyW = min(desc.Width, outW_);
-    const UINT copyH = min(desc.Height, outH_);
     D3D11_BOX box{};
-    box.right = copyW;
-    box.bottom = copyH;
+    box.left = boxX;
+    box.top = boxY;
+    box.front = 0;
+    box.right = boxX + copyW;
+    box.bottom = boxY + copyH;
     box.back = 1;
     ctx->CopySubresourceRegion(stagingTex_[stageNext_].Get(), 0, 0, 0, 0, workTex, 0, &box);
     stagedTs_ = ts100ns;
+    pendingCopyW_ = copyW;
+    pendingCopyH_ = copyH;
     stageHasPending_ = true;
     stageNext_ ^= 1;
 }
 
-bool Recorder::ConsumeStagedFrame(ID3D11DeviceContext* ctx, const D3D11_TEXTURE2D_DESC& desc)
+bool Recorder::ConsumeStagedFrame(ID3D11DeviceContext* ctx, UINT copyW, UINT copyH)
 {
     ID3D11Texture2D* ready = stagingTex_[stageNext_ ^ 1].Get();
 
-    const UINT copyW = min(desc.Width, outW_);
-    const UINT copyH = min(desc.Height, outH_);
     const UINT dstStride = outW_ * 4;
     const SIZE_T bufLen = (SIZE_T)dstStride * outH_;
 
@@ -649,8 +751,8 @@ bool Recorder::ConsumeStagedFrame(ID3D11DeviceContext* ctx, const D3D11_TEXTURE2
         if (videoErrCount_ < 3)
         {
             ++videoErrCount_;
-            LOG_ERR(L"视频帧写入失败: WriteSample (hr=0x%08lX%s), 纹理=%ux%u, 缓冲=%zu 字节, 行距=%u, ts=%lld",
-                    hr, HrSuffix(hr).c_str(), desc.Width, desc.Height, bufLen, mr.RowPitch, stagedTs_);
+            LOG_ERR(L"视频帧写入失败: WriteSample (hr=0x%08lX%s), 输出=%ux%u, 有效=%ux%u, 缓冲=%zu 字节, 行距=%u, ts=%lld",
+                    hr, HrSuffix(hr).c_str(), outW_, outH_, copyW, copyH, bufLen, mr.RowPitch, stagedTs_);
         }
         return false;
     }
@@ -658,8 +760,8 @@ bool Recorder::ConsumeStagedFrame(ID3D11DeviceContext* ctx, const D3D11_TEXTURE2
     if (!videoFirstLogged_)
     {
         videoFirstLogged_ = true;
-        LOG_INFO(L"视频首帧已写入 (纹理=%ux%u, 行距=%u, 缓冲=%zu, ts=%lld)",
-                 desc.Width, desc.Height, mr.RowPitch, bufLen, stagedTs_);
+        LOG_INFO(L"视频首帧已写入 (输出=%ux%u, 有效=%ux%u, 行距=%u, 缓冲=%zu, ts=%lld)",
+                 outW_, outH_, copyW, copyH, mr.RowPitch, bufLen, stagedTs_);
     }
     return true;
 }
@@ -673,6 +775,9 @@ void Recorder::ReleaseDeviceResources()
     stageHasPending_ = false;
     stageNext_ = 0;
     stagedTs_ = 0;
+    pendingCopyW_ = pendingCopyH_ = 0;
+    useCrop_ = false;
+    cropX_ = cropY_ = cropW_ = cropH_ = 0;
     scaledTex_.Reset();
     scaledRTV_.Reset();
     srcSRV_.Reset();
@@ -692,6 +797,11 @@ void Recorder::WriteAudio(const BYTE* data, UINT32 bytes, long long ts100ns)
     std::lock_guard<std::mutex> lock(mutex_);
     if (!writer_ || !withAudio_)
         return;
+
+    // 静音保活块与真实包可能在不同线程交错到达，时间戳必须严格递增，
+    // 否则 MF WriteSample 报 MF_E_INVALIDREQUEST。用 1(0.1us) 钳住，听不出来
+    if (audioHasData_ && ts100ns <= lastAudioTs_)
+        ts100ns = lastAudioTs_ + 1;
 
     Microsoft::WRL::ComPtr<IMFMediaBuffer> buffer;
     HRESULT hr = MFCreateMemoryBuffer(bytes, buffer.GetAddressOf());
@@ -740,6 +850,8 @@ void Recorder::WriteAudio(const BYTE* data, UINT32 bytes, long long ts100ns)
         return;
     }
     ++audioBlocks_;
+    lastAudioTs_ = ts100ns;
+    audioHasData_ = true;
     if (!audioFirstLogged_)
     {
         audioFirstLogged_ = true;

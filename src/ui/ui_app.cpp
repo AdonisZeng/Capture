@@ -364,9 +364,8 @@ void UiApp::DrawStatusBar(float width)
     char timer[16] = {};
     if (st.State() == RunState::Recording)
     {
-        dot = Pal::Danger();
-        long long sec = (long long)((GetTickCount64() - st.recordStartTick) / 1000);
-        if (sec < 0) sec = 0;
+        dot = st.paused ? Pal::Warning() : Pal::Danger();
+        const long long sec = RecElapsedSec(st);
         snprintf(timer, sizeof(timer), "%02lld:%02lld:%02lld", sec / 3600, (sec / 60) % 60, sec % 60);
         text = timer;
     }
@@ -384,10 +383,10 @@ void UiApp::DrawStatusBar(float width)
     if (st.State() == RunState::Recording)
     {
         // 录制中紧跟计时器之后，间距按计时器文本宽度推算，避免压字
-        const char* kRecLabel = "录制中";
+        const char* kRecLabel = st.paused ? "已暂停" : "录制中";
         dl->AddText(ImVec2(c.x + Space::Md + ImGui::CalcTextSize(text).x + Space::Sm,
                            c.y - ImGui::CalcTextSize(kRecLabel).y * 0.5f),
-                    ImGui::GetColorU32(Pal::Danger()), kRecLabel);
+                    ImGui::GetColorU32(st.paused ? Pal::Warning() : Pal::Danger()), kRecLabel);
     }
 
     // 右侧：捕获帧率 + 音频异常提示（两路各自的失败原因合并展示，详细说明在录屏页）
@@ -414,8 +413,8 @@ void UiApp::DrawStatusBar(float width)
                        c.y - ImGui::CalcTextSize(right.c_str()).y * 0.5f),
                 ImGui::GetColorU32(rightCol), right.c_str());
 
-    // 临时提示：状态栏居中，4 秒后自动消失
-    if (!st.toast.empty() && GetTickCount64() - st.toastTick < 4000)
+    // 临时提示：状态栏居中，5 秒后自动消失
+    if (!st.toast.empty() && GetTickCount64() - st.toastTick < 5000)
     {
         std::string t = WideToUtf8Str(st.toast);
         ImVec2 ts = ImGui::CalcTextSize(t.c_str());

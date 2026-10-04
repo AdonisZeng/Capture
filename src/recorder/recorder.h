@@ -33,12 +33,15 @@ public:
     // srcW/srcH = 捕获源尺寸；outW/outH = 期望编码尺寸（宽高内部向下取偶）。
     // 目标尺寸小于源尺寸时启用 GPU 缩放（延迟上下文 + 全屏三角形线性采样）；
     // 缩放不可用会自动退回源尺寸录制。
+    // crop = 区域录制的源像素矩形（相对捕获帧左上角，右/下不含）：
+    //   非空时 outW/outH 被忽略，按裁剪区原分辨率录制（向下取偶），不做 GPU 缩放。
     // hwEncode=false 时禁止硬件变换（纯软件编码）；
     // audioBitrateKbps <= 0 时按 192 kbps 处理。
     bool Init(ID3D11Device* device, const wchar_t* path,
               UINT srcW, UINT srcH, UINT outW, UINT outH,
               UINT fps, UINT bitrateMbps, bool withAudio,
-              bool hwEncode, int audioBitrateKbps, std::wstring& err);
+              bool hwEncode, int audioBitrateKbps, std::wstring& err,
+              const RECT* crop = nullptr);
     // 结束并 Finalize（可能阻塞数秒）。之后可再次 Init 录制新文件。
     void Stop();
     // GPU 设备丢失后由主循环调用（须在非录制/非保存态）：清掉所有绑定在
@@ -64,12 +67,16 @@ public:
 
 private:
     void StopLocked();   // 需持有 mutex_ 调用
+    // 把双暂存里还压着的最后一帧刷进编码器（Stop/Finalize 前调用，需持有 mutex_）。
+    // 不刷则尾部恒丢一帧，且音频尾比视频长一截
+    bool FlushPendingFrame();
     // ---- 分辨率缩放 ----
     bool SetupScaler(ID3D11Device* device);          // 目标纹理/RTV/着色器/采样器
     bool ScaleToOutput(ID3D11DeviceContext* imm, ID3D11Texture2D* src);
-    // 读回并送编码暂存中待处理的那帧。返回 false = 设备/编码器已不可用，
+    // 读回并送编码暂存中待处理的那帧。copyW/H = 本次拷贝进暂存的有效像素
+    // （区域录制时小于输出尺寸，其余填零）。返回 false = 设备/编码器已不可用，
     // 调用方应放弃本帧后续写入。无论成败，待处理帧都视为已消费
-    bool ConsumeStagedFrame(ID3D11DeviceContext* ctx, const D3D11_TEXTURE2D_DESC& desc);
+    bool ConsumeStagedFrame(ID3D11DeviceContext* ctx, UINT copyW, UINT copyH);
     // 确保双暂存纹理按 desc 尺寸就绪（惰性创建，尺寸变化时成对重建）
     bool EnsureStagingPair(ID3D11Device* device, const D3D11_TEXTURE2D_DESC& desc);
 
@@ -88,6 +95,10 @@ private:
     int   stageNext_ = 0;                 // 下一帧拷贝目标缓冲（0/1 交替）
     bool  stageHasPending_ = false;       // stagingTex_[stageNext_^1] 有上一帧待读
     long long stagedTs_ = 0;              // 待读那帧的采集时间戳
+    UINT  pendingCopyW_ = 0, pendingCopyH_ = 0;  // 待读那帧的有效像素（区域录制时 < 输出尺寸）
+    // 区域裁剪（源像素坐标，右/下不含）：启用时 outW/H 即裁剪区偶数尺寸，不做 GPU 缩放
+    bool  useCrop_ = false;
+    UINT  cropX_ = 0, cropY_ = 0, cropW_ = 0, cropH_ = 0;
     // 分辨率缩放（目标小于源时启用）
     bool  scale_ = false;
     Microsoft::WRL::ComPtr<ID3D11Texture2D>        scaledTex_;
@@ -108,4 +119,6 @@ private:
     int  videoErrCount_ = 0, audioErrCount_ = 0;   // 已打印的错误数
     int  videoErrTotal_ = 0, audioErrTotal_ = 0;   // 错误总数（Stop 时汇报）
     long long videoFrames_ = 0, audioBlocks_ = 0;  // 成功写入计数
+    long long lastAudioTs_ = 0;   // 已写入音频的最大时间戳（单调化用，防静音保活与真实包竞态倒退）
+    bool audioHasData_ = false;
 };

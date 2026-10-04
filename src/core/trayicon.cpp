@@ -12,6 +12,8 @@ namespace {
 constexpr UINT IDM_SHOW     = 40001;
 constexpr UINT IDM_CAPTURE  = 40002;
 constexpr UINT IDM_RECORD   = 40003;
+constexpr UINT IDM_PAUSE    = 40006;
+constexpr UINT IDM_OPENDIR  = 40007;
 constexpr UINT IDM_SETTINGS = 40004;
 constexpr UINT IDM_QUIT     = 40005;
 
@@ -206,7 +208,9 @@ void TrayIcon::ShowContextMenu()
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_CAPTURE,  L"截图");
     AppendMenuW(menu, MF_STRING, IDM_RECORD,   L"开始 / 停止录制");
+    AppendMenuW(menu, MF_STRING, IDM_PAUSE, paused_ ? L"继续录制" : L"暂停录制");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, IDM_OPENDIR,  L"打开输出目录");
     AppendMenuW(menu, MF_STRING, IDM_SETTINGS, L"设置…");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_QUIT,     L"退出");
@@ -221,6 +225,8 @@ void TrayIcon::ShowContextMenu()
     case IDM_SHOW:     PostMessageW(hwnd_, msgId_, (WPARAM)TrayAction::Show, 0);     break;
     case IDM_CAPTURE:  PostMessageW(hwnd_, msgId_, (WPARAM)TrayAction::Capture, 0);  break;
     case IDM_RECORD:   PostMessageW(hwnd_, msgId_, (WPARAM)TrayAction::Record, 0);   break;
+    case IDM_PAUSE:    PostMessageW(hwnd_, msgId_, (WPARAM)TrayAction::Pause, 0);    break;
+    case IDM_OPENDIR:  PostMessageW(hwnd_, msgId_, (WPARAM)TrayAction::OpenDir, 0);  break;
     case IDM_SETTINGS: PostMessageW(hwnd_, msgId_, (WPARAM)TrayAction::Settings, 0); break;
     case IDM_QUIT:     PostMessageW(hwnd_, msgId_, (WPARAM)TrayAction::Quit, 0);     break;
     default: break;
@@ -234,7 +240,7 @@ bool TrayIcon::OnMessage(WPARAM wParam, LPARAM lParam, TrayAction& action)
         return false;
 
     // 菜单选择结果或主动投递的动作
-    if (wParam >= (WPARAM)TrayAction::Show && wParam <= (WPARAM)TrayAction::Quit)
+    if (wParam >= (WPARAM)TrayAction::Show && wParam <= (WPARAM)TrayAction::OpenDir)
     {
         action = (TrayAction)wParam;
         return true;
