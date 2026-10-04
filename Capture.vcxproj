@@ -113,6 +113,12 @@
     <Manifest>
       <EnableSegmentHeap>true</EnableSegmentHeap>
     </Manifest>
+    <PostBuildEvent>
+      <!-- 发布产物：链接完顺手生成 Capture.exe.sha256，免得发布时现算、
+           算漏，或把上次残留的旧校验文件当成新的传上去。
+           只有 Release 两个配置生成，Debug 产物不发布。详见 docs/RELEASING.md 第 7 节。 -->
+      <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)tools\gen-sha256.ps1" -ExePath "$(TargetPath)"</Command>
+    </PostBuildEvent>
     <ResourceCompile>
       <!-- 图标资源脚本需按相对路径找到 ico\Capture.ico 与 src\core\resource.h -->
       <AdditionalIncludeDirectories>$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -161,6 +167,12 @@
     <Manifest>
       <EnableSegmentHeap>true</EnableSegmentHeap>
     </Manifest>
+    <PostBuildEvent>
+      <!-- 发布产物：链接完顺手生成 Capture.exe.sha256，免得发布时现算、
+           算漏，或把上次残留的旧校验文件当成新的传上去。
+           只有 Release 两个配置生成，Debug 产物不发布。详见 docs/RELEASING.md 第 7 节。 -->
+      <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)tools\gen-sha256.ps1" -ExePath "$(TargetPath)"</Command>
+    </PostBuildEvent>
     <ResourceCompile>
       <!-- 图标资源脚本需按相对路径找到 ico\Capture.ico 与 src\core\resource.h -->
       <AdditionalIncludeDirectories>$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -170,6 +182,7 @@
     <None Include="imgui\.editorconfig" />
     <None Include="imgui\.gitattributes" />
     <None Include="imgui\.gitignore" />
+    <None Include="tools\gen-sha256.ps1" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="imgui\imconfig.h" />
