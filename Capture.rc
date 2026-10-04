@@ -1,0 +1,6 @@
+// Capture.rc - application resources
+// IDI_CAPTURE is the exe main icon: Explorer / taskbar / window title bar / tray
+// all load it at runtime via LoadImageW(..., MAKEINTRESOURCEW(IDI_CAPTURE), ...).
+#include "src\core\resource.h"
+
+IDI_CAPTURE             ICON    "ico\\Capture.ico"

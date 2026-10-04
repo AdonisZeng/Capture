@@ -1,0 +1,13 @@
+# clangd 固定编译数据库（无 CMake 时的 compile_commands.json 替代）
+# 与 Capture.vcxproj 的 x64 Debug 配置保持一致；修改编译选项时两处需同步
+--target=x86_64-pc-windows-msvc
+-std=c++20
+-fms-compatibility
+-fms-extensions
+-DUNICODE
+-D_UNICODE
+-D_WINDOWS
+-D_DEBUG
+-Iimgui
+-Iimgui/backends
+-Isrc

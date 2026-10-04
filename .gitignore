@@ -1,0 +1,112 @@
+# ---------------------------------------------------------------------------
+# MSVC / Visual Studio build output
+# ---------------------------------------------------------------------------
+# Intermediate dir: $(ProjectName)\x64\$(Configuration)\
+/Capture/
+# Output dir: x64\$(Configuration)\
+/x64/
+
+# Individual build artifacts (belt-and-braces, in case output paths change)
+[Bb]uild/
+[Oo]bj/
+[Ii]nc/
+[Ll]og/
+*.obj
+*.obj.*
+*.iobj
+*.ipdb
+*.pdb
+*.pdb.*
+*.ilk
+*.idb
+*.exp
+*.lib
+*.res
+*.recipe
+*.tlog
+*.lastbuildstate
+*.log
+*.exe
+*.dll
+*.iobj-*
+
+# MSVC IntelliSense / browse database
+.vc.db
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.aps
+*.ncb
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+
+# ReSharper / Rider / Visual Studio extras
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+.vs/
+
+# ---------------------------------------------------------------------------
+# Runtime output (generated on every launch)
+# ---------------------------------------------------------------------------
+# Application logs written by src/core/log.cpp
+/log/
+# User settings produced by src/settings/settings.cpp (per-machine state).
+# Anchored to the config dir so .vscode/settings.json stays tracked.
+/x64/*/config/
+/config/
+/config/settings.json
+/config/settings.json.bak
+
+# ---------------------------------------------------------------------------
+# Screenshots / recordings produced by the app
+# ---------------------------------------------------------------------------
+*.mp4
+*.mov
+*.mkv
+!imgui/**/*.mp4
+
+# ---------------------------------------------------------------------------
+# Third-party editor / tooling caches
+# ---------------------------------------------------------------------------
+# CodeGraph local database + daemon state (self-ignores, kept explicit here)
+/.codegraph/
+# AI assistant local state
+/.codebuddy/
+.claude/
+*.log.bak
+
+# ---------------------------------------------------------------------------
+# Vendored Dear ImGui — only the parts the build actually uses
+# ---------------------------------------------------------------------------
+# See Capture.vcxproj: it compiles imgui\*.cpp + imgui\backends\imgui_impl_{dx11,win32}.cpp
+# Docs / examples / CI templates / misc helpers are not referenced by the build.
+/imgui/.github/
+/imgui/docs/
+/imgui/examples/
+/imgui/misc/
+
+# ---------------------------------------------------------------------------
+# OS / editor noise
+# ---------------------------------------------------------------------------
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+*.tmp
+*.temp
+*.bak
+*.orig
+*.swp
+*.swo
+*~
+.ntvs*
+.ntuser*
+*.stackdump

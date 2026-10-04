@@ -1,0 +1,31 @@
+{
+  // 禁用微软 C/C++ 插件自带的代码提示引擎，全权交给 clangd 接管
+  "C_Cpp.intelliSenseEngine": "disabled",
+
+  // clangd 启动参数优化
+  "clangd.arguments": [
+    "--background-index",           // 后台建立索引，加速代码跳转
+    "--clang-tidy",                 // 开启静态代码分析
+    "--completion-style=detailed",  // 详细代码补全
+    "--header-insertion=never",     // 禁止自动无序插入头文件
+    "--pch-storage=memory"          // PCH 放内存，大项目跳转更快
+  ],
+
+  // vendored 的 imgui 完整仓库和构建产物不参与监视/搜索，降低编辑器负担
+  "files.watcherExclude": {
+      "**/imgui/examples/**": true,
+      "**/imgui/docs/**": true,
+      "**/imgui/misc/**": true,
+      "**/imgui/.github/**": true,
+      "**/x64/**": true,
+      "**/log/**": true,
+      "**/.vs/**": true
+  },
+  "search.exclude": {
+      "**/imgui/examples": true,
+      "**/imgui/docs": true,
+      "**/x64": true,
+      "**/log": true,
+      "**/.vs": true
+  }
+}

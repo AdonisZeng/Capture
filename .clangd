@@ -1,0 +1,17 @@
+# 编译参数（--target、宏定义、-I 包含目录）统一由根目录 compile_flags.txt 提供，
+# 与 Capture.vcxproj 保持同步；本文件只负责 clangd 的诊断行为配置。
+# 注意：compile_flags.txt 会把编译工作目录锚定到项目根，
+# 各模块 cpp 里的 "core/log.h" 等跨子目录包含依赖其中的 -Isrc。
+
+Diagnostics:
+  # 关闭"包含但未使用"提示，imgui 源码大量集中 include，会刷屏
+  UnusedIncludes: None
+  Suppress:
+    # 屏蔽 MSVC 特有语法在 Clang 下的无害警告
+    - "-Wmicrosoft-*"
+  ClangTidy:
+    Remove:
+      # vendored imgui 和 C++/WinRT 头文件会触发大量无关告警，只保留分析类检查
+      - modernize-*
+      - readability-*
+      - bugprone-*

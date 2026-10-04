@@ -1,0 +1,230 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="src">
+      <UniqueIdentifier>{7a1c4f2e-0001-4b8a-9c3d-111111111111}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\core">
+      <UniqueIdentifier>{7a1c4f2e-0002-4b8a-9c3d-222222222222}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\graphics">
+      <UniqueIdentifier>{7a1c4f2e-0003-4b8a-9c3d-333333333333}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\capture">
+      <UniqueIdentifier>{7a1c4f2e-0004-4b8a-9c3d-444444444444}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\audio">
+      <UniqueIdentifier>{7a1c4f2e-0005-4b8a-9c3d-555555555555}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\recorder">
+      <UniqueIdentifier>{7a1c4f2e-0006-4b8a-9c3d-666666666666}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\settings">
+      <UniqueIdentifier>{7a1c4f2e-0007-4b8a-9c3d-777777777777}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\screenshot">
+      <UniqueIdentifier>{7a1c4f2e-0008-4b8a-9c3d-888888888888}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\ui">
+      <UniqueIdentifier>{7a1c4f2e-0009-4b8a-9c3d-999999999999}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="imgui">
+      <UniqueIdentifier>{1fe16c26-3014-48f4-a0b4-86596c703265}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="imgui\.editorconfig">
+      <Filter>imgui</Filter>
+    </None>
+    <None Include="imgui\.gitattributes">
+      <Filter>imgui</Filter>
+    </None>
+    <None Include="imgui\.gitignore">
+      <Filter>imgui</Filter>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\core\log.h">
+      <Filter>src\core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\graphics\graphics.h">
+      <Filter>src\graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="src\capture\capture.h">
+      <Filter>src\capture</Filter>
+    </ClInclude>
+    <ClInclude Include="src\audio\audio.h">
+      <Filter>src\audio</Filter>
+    </ClInclude>
+    <ClInclude Include="src\audio\mixer.h">
+      <Filter>src\audio</Filter>
+    </ClInclude>
+    <ClInclude Include="src\recorder\recorder.h">
+      <Filter>src\recorder</Filter>
+    </ClInclude>
+    <ClInclude Include="imgui\imconfig.h">
+      <Filter>imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="imgui\imgui.h">
+      <Filter>imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="imgui\imgui_internal.h">
+      <Filter>imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="imgui\imstb_rectpack.h">
+      <Filter>imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="imgui\imstb_textedit.h">
+      <Filter>imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="imgui\imstb_truetype.h">
+      <Filter>imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="imgui\backends\imgui_impl_dx11.h">
+      <Filter>imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="imgui\backends\imgui_impl_win32.h">
+      <Filter>imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="src\core\appicon.h">
+      <Filter>src\core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\core\resource.h">
+      <Filter>src\core</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\core\util.h">
+      <Filter>src\core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\core\hotkey.h">
+      <Filter>src\core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\core\trayicon.h">
+      <Filter>src\core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\core\autostart.h">
+      <Filter>src\core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\settings\settings.h">
+      <Filter>src\settings</Filter>
+    </ClInclude>
+    <ClInclude Include="src\screenshot\screenshot.h">
+      <Filter>src\screenshot</Filter>
+    </ClInclude>
+    <ClInclude Include="src\screenshot\snipping.h">
+      <Filter>src\screenshot</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ui\ui_app.h">
+      <Filter>src\ui</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ui\ui_theme.h">
+      <Filter>src\ui</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ui\ui_widgets.h">
+      <Filter>src\ui</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ui\page_capture.h">
+      <Filter>src\ui</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ui\page_record.h">
+      <Filter>src\ui</Filter>
+    </ClInclude>
+    <ClInclude Include="src\app_state.h">
+      <Filter>src</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\core\util.cpp">
+      <Filter>src\core</Filter>
+    </ClCompile>
+    <ClCompile Include="src\core\hotkey.cpp">
+      <Filter>src\core</Filter>
+    </ClCompile>
+    <ClCompile Include="src\core\trayicon.cpp">
+      <Filter>src\core</Filter>
+    </ClCompile>
+    <ClCompile Include="src\core\autostart.cpp">
+      <Filter>src\core</Filter>
+    </ClCompile>
+    <ClCompile Include="src\settings\settings.cpp">
+      <Filter>src\settings</Filter>
+    </ClCompile>
+    <ClCompile Include="src\screenshot\screenshot.cpp">
+      <Filter>src\screenshot</Filter>
+    </ClCompile>
+    <ClCompile Include="src\screenshot\snipping.cpp">
+      <Filter>src\screenshot</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ui\ui_app.cpp">
+      <Filter>src\ui</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ui\ui_theme.cpp">
+      <Filter>src\ui</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ui\ui_widgets.cpp">
+      <Filter>src\ui</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ui\page_capture.cpp">
+      <Filter>src\ui</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ui\page_record.cpp">
+      <Filter>src\ui</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\main.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\core\log.cpp">
+      <Filter>src\core</Filter>
+    </ClCompile>
+    <ClCompile Include="src\core\appicon.cpp">
+      <Filter>src\core</Filter>
+    </ClCompile>
+    <ClCompile Include="src\graphics\graphics.cpp">
+      <Filter>src\graphics</Filter>
+    </ClCompile>
+    <ClCompile Include="src\capture\capture.cpp">
+      <Filter>src\capture</Filter>
+    </ClCompile>
+    <ClCompile Include="src\audio\audio.cpp">
+      <Filter>src\audio</Filter>
+    </ClCompile>
+    <ClCompile Include="src\audio\mixer.cpp">
+      <Filter>src\audio</Filter>
+    </ClCompile>
+    <ClCompile Include="src\recorder\recorder.cpp">
+      <Filter>src\recorder</Filter>
+    </ClCompile>
+    <ClCompile Include="imgui\imgui.cpp">
+      <Filter>imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="imgui\imgui_demo.cpp">
+      <Filter>imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="imgui\imgui_draw.cpp">
+      <Filter>imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="imgui\imgui_tables.cpp">
+      <Filter>imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="imgui\imgui_widgets.cpp">
+      <Filter>imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="imgui\backends\imgui_impl_dx11.cpp">
+      <Filter>imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="imgui\backends\imgui_impl_win32.cpp">
+      <Filter>imgui</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="imgui\LICENSE.txt">
+      <Filter>imgui</Filter>
+    </Text>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="Capture.rc" />
+  </ItemGroup>
+</Project>
