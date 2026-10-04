@@ -186,8 +186,14 @@ void DrawUpdateCard(const UiContext& ctx, float cardW)
     // ---- 下载进度 ----
     if (us == Update::State::Downloading || us == Update::State::Verifying)
     {
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::ProgressBar((float)Update::Progress(), ImVec2(-1.0f, 0.0f));
+        // 内缩必须写进 size_arg，不能用 SetNextItemWidth：
+        // ProgressBar 走 CalcItemSize(size_arg, CalcItemWidth(), ...)，
+        // 而 CalcItemSize 只在 size.x == 0 时才取 CalcItemWidth 的值；
+        // 传 -1 之类的负值是「相对内容区宽度」语义，SetNextItemWidth 完全不起作用
+        // （表现为右缘仍压在卡片描边上，少扣了 CardPad）
+        // 本卡片内容区右缘即卡片描边，扣 CardPad 留白、再扣 EdgeInset 防裁剪线削掉半像素
+        ImGui::ProgressBar((float)Update::Progress(),
+                           ImVec2(-(pad + Control::EdgeInset), 0.0f));
     }
 
     // ---- 操作按钮 ----
@@ -242,8 +248,11 @@ void DrawUpdateCard(const UiContext& ctx, float cardW)
     ImGui::EndDisabled();
 
     // ---- 自动检查开关 ----
+    // 必须显式传 rightInset：本卡片是手动布局（背景走通道 0，内容画在页面 child 里），
+    // 自身没有 WindowPadding，内容区右缘即卡片描边；不内缩开关会紧贴卡片右缘，
+    // 与上方 BeginChild 卡片里的开关对不齐
     bool autoChk = cfg.updateAutoCheck;
-    if (ToggleRow("up_auto", "启动时自动检查更新", &autoChk))
+    if (ToggleRow("up_auto", "启动时自动检查更新", &autoChk, pad))
     {
         cfg.updateAutoCheck = autoChk;
         Update::SetAutoCheck(autoChk);

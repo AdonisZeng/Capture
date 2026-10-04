@@ -53,8 +53,12 @@ bool PathRow(const char* id, const char* label, float labelW,
              char* buf, size_t bufCap, bool withBrowse = false,
              bool* browseHit = nullptr);
 
-// 开关行：左标签 + 右侧开关（返回是否被切换）
-bool ToggleRow(const char* id, const char* label, bool* value);
+// 开关行：左标签 + 右侧开关（返回是否被切换）。
+// rightInset：开关右缘相对内容区右缘的内缩。默认 0 适用于 BeginChild 卡片
+// （child 有真实 WindowPadding，右缘自带 pad）。手动布局卡片（ChannelsSplit 自绘背景，
+// 内容画在页面 child 里、没有自己的 WindowPadding）的内容区右缘就是卡片右缘，
+// 不传内缩会让开关紧贴卡片描边，必须显式传 Control::CardPad
+bool ToggleRow(const char* id, const char* label, bool* value, float rightInset = 0.0f);
 
 // 增益滑块行：标签 + 滑块 + 右侧百分比文本。percent 为 0..200 的整数百分比，
 // 100 表示原始音量；超过 100 的部分靠后端混音时限幅保护

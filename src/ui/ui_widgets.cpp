@@ -275,13 +275,17 @@ bool PathRow(const char* id, const char* label, float labelW,
     return edited;
 }
 
-bool ToggleRow(const char* id, const char* label, bool* value)
+bool ToggleRow(const char* id, const char* label, bool* value, float rightInset)
 {
     ImGui::PushID(id);
     float rowH = 26.0f;
     float knobW = 40.0f, knobH = 22.0f;
     ImVec2 start = ImGui::GetCursorScreenPos();
-    float rowW = ImGui::GetContentRegionAvail().x;   // 行首处测量：行内可用宽度
+    // 行首处测量：行内可用宽度。rightInset 是给「手动布局卡片」留的右侧内缩——
+    // 那类卡片的内容画在页面 child 里，自身没有 WindowPadding，
+    // GetContentRegionAvail().x 的右端就是卡片描边所在位置，不内缩开关会贴边
+    float rowW = ImGui::GetContentRegionAvail().x - rightInset;
+    if (rowW < knobW) rowW = knobW;   // 内缩过大时兜底，保证开关不跑到容器左侧外面
 
     // 标签行高与开关轨道垂直居中对齐（FramePadding 使 FrameHeight 大于行高，不可用其对齐）
     ImGui::SetCursorScreenPos(ImVec2(start.x, start.y + (knobH - ImGui::GetTextLineHeight()) * 0.5f));
