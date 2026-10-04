@@ -3,8 +3,10 @@
 # ---------------------------------------------------------------------------
 # Intermediate dir: $(ProjectName)\x64\$(Configuration)\
 /Capture/
-# Output dir: x64\$(Configuration)\
+# Output dir: x64\$(Configuration)\  (Win32 配置输出到根部的 Release\ 与 Debug\)
 /x64/
+/Release/
+/Debug/
 
 # Individual build artifacts (belt-and-braces, in case output paths change)
 [Bb]uild/
@@ -61,6 +63,17 @@ _ReSharper*/
 /config/
 /config/settings.json
 /config/settings.json.bak
+
+# ---------------------------------------------------------------------------
+# 版本管理
+# ---------------------------------------------------------------------------
+# 自动更新下载的临时包（正常落在 %TEMP%\Capture-update，
+# 但用户手工测试时可能拷到仓库里，故显式忽略）
+/update/
+# 只忽略发布流程顺手落到仓库根的那批校验文件，不要全局 *.sha256：
+# 那会把将来可能在源码里出现的校验清单也一并忽略掉
+/*.sha256
+/*.exe.sha256
 
 # ---------------------------------------------------------------------------
 # Screenshots / recordings produced by the app

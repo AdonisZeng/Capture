@@ -8,6 +8,7 @@
 #include "core/log.h"
 #include "core/hotkey.h"
 #include "core/autostart.h"
+#include "core/update.h"
 #include <windows.h>
 #include <mfapi.h>
 #include <shlobj_core.h>
@@ -21,7 +22,6 @@ constexpr float kNavWidth  = Control::NavWidth;
 constexpr float kStatusH   = Control::StatusBar;
 constexpr int   kPageCount = 3;
 const char* const kPageNames[kPageCount] = { "截屏", "录屏", "设置" };
-constexpr const char* kVersion = "v1.0";
 
 // 热键编辑缓冲（与设置页共用，SetHotkeyText 会同步实际生效值）
 constexpr int kHotkeyCount = 3;
@@ -112,6 +112,222 @@ void UiApp::SetPage(int page)
     if (cfg_)
         cfg_->lastPage = page;
 }
+
+// ---------------------------------------------------------------------------
+// 设置页：版本与更新
+// ---------------------------------------------------------------------------
+namespace {
+
+// Release 正文是 Markdown 原文，直接塞进弹窗会很长；这里截断到 kNotesMaxChars
+constexpr size_t kNotesMaxChars = 700;
+
+// 去掉 CR，并截断超长正文（弹窗高度不可控，正文必须自己收口）
+std::string ClipNotes(const std::string& notes)
+{
+    std::string s;
+    s.reserve(notes.size());
+    for (char c : notes)
+        if (c != '\r')
+            s += c;
+    // 去掉首尾空行
+    size_t b = s.find_first_not_of(" \n");
+    if (b == std::string::npos)
+        return std::string();
+    size_t e = s.find_last_not_of(" \n");
+    s = s.substr(b, e - b + 1);
+    if (s.size() > kNotesMaxChars)
+    {
+        // 截到 UTF-8 字符边界再截断：直接 resize 会拦腰砍断多字节序列，
+        // 留下的半个汉字会被 ImGui 渲染成乱码方块
+        size_t cut = kNotesMaxChars;
+        while (cut > 0 && ((unsigned char)s[cut] & 0xC0) == 0x80)
+            --cut;   // 落在续字节上：回退到该字符的首字节
+        s.resize(cut);
+        s += "…";
+    }
+    return s;
+}
+
+// 「版本与更新」卡片。高度按内容实际结束位置反算（与上方热键卡片同一手法），
+// 不写死数值：状态行在「检查中 / 有新版本 / 下载进度 / 已就绪」之间切换，
+// 行数会变，写死必然溢出
+void DrawUpdateCard(const UiContext& ctx, float cardW)
+{
+    Settings& cfg = *ctx.cfg;
+    AppState& st = *ctx.st;
+    const Update::State us = Update::CurrentState();
+    const Update::Info info = Update::LatestInfo();
+    const bool busy = st.IsBusy();   // 录制/保存中不允许换文件
+
+    const float pad = Control::CardPad;
+    ImVec2 cardMin = ImGui::GetCursorScreenPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    dl->ChannelsSplit(2);
+    dl->ChannelsSetCurrent(1);
+    ImGui::SetCursorScreenPos(ImVec2(cardMin.x + pad, cardMin.y + pad));
+    ImGui::Indent(pad);
+    SectionTitle("版本与更新");
+
+    // ---- 当前版本 ----
+    ImGui::TextUnformatted("当前版本");
+    ImGui::SameLine(120.0f);
+    ImGui::TextColored(Pal::Text(), "%s（%s）", Update::VersionDisplay(), Update::ArchName());
+
+    // ---- 状态行 ----
+    const std::string status = Update::StatusText();
+    if (us == Update::State::Failed)
+        HintTextColored(status.c_str(), Pal::Danger());
+    else if (us == Update::State::Available || us == Update::State::Ready)
+        HintTextColored(status.c_str(), Pal::Accent());
+    else
+        HintText(status.c_str());
+
+    // ---- 下载进度 ----
+    if (us == Update::State::Downloading || us == Update::State::Verifying)
+    {
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::ProgressBar((float)Update::Progress(), ImVec2(-1.0f, 0.0f));
+    }
+
+    // ---- 操作按钮 ----
+    // 录制/保存期间一律禁用：换文件必须等程序完全空闲，否则助手要等主进程退出，
+    // 而主进程此时还在等 Finalize，用户看到的是「点了没反应」
+    ImGui::BeginDisabled(busy || Update::Busy());
+    if (us == Update::State::Available)
+    {
+        if (SecondaryButton("up_dl", "下载更新", ImVec2(110.0f, Control::Button)))
+        {
+            Update::StartDownload();
+            st.SetToast(L"开始下载新版本，下载完成后请点击「重启安装」");
+        }
+        ImGui::SameLine();
+        if (SecondaryButton("up_ignore", "忽略此版本", ImVec2(120.0f, Control::Button)))
+        {
+            Update::SkipVersion();
+            st.SetToast(L"已忽略该版本，可在 24 小时后或手动再次检查");
+        }
+    }
+    else if (us == Update::State::Ready)
+    {
+        if (PrimaryButton("up_install", "重启安装", ImVec2(130.0f, Control::Button),
+                          Pal::Accent()))
+        {
+            // Apply() 只是拉起替换助手并返回 true，真正的换文件与重启由助手完成，
+            // 故此处必须让主循环退出（wantApplyUpdate）
+            if (Update::Apply())
+                st.wantApplyUpdate = true;
+            else
+                st.errPopup = Update::ErrorText().empty() ? "无法启动更新助手"
+                                                          : Update::ErrorText();
+        }
+        ImGui::SameLine();
+        if (SecondaryButton("up_later", "稍后", ImVec2(90.0f, Control::Button)))
+            st.SetToast(L"已下载，可在设置页随时点击「重启安装」");
+    }
+    else
+    {
+        // 检查中时 Update::Busy() 为真，上面那个 BeginDisabled 已经把按钮禁掉了，
+        // 文案同步改成「检查中…」让禁用原因可见
+        const bool checking = (us == Update::State::Checking);
+        if (SecondaryButton("up_check", checking ? "检查中…" : "检查更新",
+                            ImVec2(120.0f, Control::Button)))
+        {
+            Update::CheckNow();
+        }
+        ImGui::SameLine();
+        if (SecondaryButton("up_web", "打开发布页", ImVec2(120.0f, Control::Button)))
+            Update::OpenReleasePage();
+    }
+    ImGui::EndDisabled();
+
+    // ---- 自动检查开关 ----
+    bool autoChk = cfg.updateAutoCheck;
+    if (ToggleRow("up_auto", "启动时自动检查更新", &autoChk))
+    {
+        cfg.updateAutoCheck = autoChk;
+        Update::SetAutoCheck(autoChk);
+        SaveSettings(cfg);
+        st.SetToast(autoChk ? L"已开启启动自动检查（最短间隔 24 小时）"
+                            : L"已关闭启动自动检查");
+    }
+    HintText("更新包来自本项目的 GitHub Releases，下载后自动校验 SHA-256；"
+             "程序未做代码签名，请只从官方 Release 获取");
+
+    ImGui::Unindent(pad);   // 与开头 Indent 配对
+
+    ImVec2 cardMax(cardMin.x + cardW,
+                   ImGui::GetCursorScreenPos().y - ImGui::GetStyle().ItemSpacing.y + pad);
+    dl->ChannelsSetCurrent(0);
+    DrawCard(cardMin, cardMax, Radius::Card, Pal::CardBg(), pad);
+    dl->ChannelsMerge();
+}
+
+// 发现新版本的模态弹窗。latch 保证同一次发现只弹一次，
+// 「稍后」关闭后要等状态离开 Available（下载/忽略/重新检查）才允许再弹
+bool g_updatePopupLatch = false;
+
+void DrawUpdatePopup()
+{
+    if (Update::CurrentState() != Update::State::Available)
+    {
+        g_updatePopupLatch = false;
+        return;
+    }
+    if (!g_updatePopupLatch)
+    {
+        ImGui::OpenPopup("发现新版本");
+        g_updatePopupLatch = true;
+    }
+    if (!ImGui::BeginPopupModal("发现新版本", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    const Update::Info info = Update::LatestInfo();
+    ImGui::TextColored(Pal::Accent(), "%s", info.tag.c_str());
+    ImGui::SameLine();
+    ImGui::TextDisabled("当前 %s", Update::VersionDisplay());
+    ImGui::Dummy(ImVec2(0.0f, Space::Sm));
+
+    // 发布说明：可能为空（没写 Release 正文），此时不占位
+    const std::string notes = ClipNotes(info.notes);
+    if (!notes.empty())
+        ImGui::TextWrapped("%s", notes.c_str());
+    if (!info.assetName.empty())
+    {
+        ImGui::Dummy(ImVec2(0.0f, Space::Xs));
+        ImGui::TextDisabled("安装包：%s", info.assetName.c_str());
+    }
+
+    ImGui::Dummy(ImVec2(0.0f, Space::Md));
+    ImGui::Separator();
+    ImGui::Dummy(ImVec2(0.0f, Space::Sm));
+
+    constexpr float kBW = 118.0f, kBH = Control::Button;
+    if (SecondaryButton("upd_dl", "下载更新", ImVec2(kBW, kBH)))
+    {
+        Update::StartDownload();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (SecondaryButton("upd_web", "打开发布页", ImVec2(kBW, kBH)))
+    {
+        Update::OpenReleasePage();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (SecondaryButton("upd_ignore", "忽略此版本", ImVec2(kBW, kBH)))
+    {
+        Update::SkipVersion();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (SecondaryButton("upd_later", "稍后", ImVec2(70.0f, kBH)))
+        ImGui::CloseCurrentPopup();
+
+    ImGui::EndPopup();
+}
+
+}   // namespace
 
 // ---------------------------------------------------------------------------
 // 设置页（热键）
@@ -271,6 +487,10 @@ void DrawSettingsPage(const UiContext& ctx)
         HintText("登录 Windows 后自动启动并显示托盘图标");
         ImGui::EndChild();
     }
+
+    // ================= 版本与更新 =================
+    ImGui::Dummy(ImVec2(0.0f, Space::Sm));
+    DrawUpdateCard(ctx, ImGui::GetContentRegionAvail().x);
 }
 
 }   // namespace
@@ -324,8 +544,10 @@ void UiApp::DrawNav(float height)
         y += Control::NavItem + Control::NavGap;
     }
 
-    // 底部版本号（主题开关在下方状态栏左下角，见 DrawStatusBar）
+    // 底部版本号（取自 core/version.h，与 exe 属性、Release tag 同源；
+    // 主题开关在下方状态栏左下角，见 DrawStatusBar）
     PushFontSlot(FontSmall);
+    const char* kVersion = Update::VersionDisplay();
     ImVec2 vs = ImGui::CalcTextSize(kVersion);
     dl->AddText(ImVec2(mn.x + (kNavWidth - vs.x) * 0.5f,
                        mn.y + height - Space::Md - Control::Row * 0.5f),
@@ -498,5 +720,6 @@ void UiApp::Draw()
 
     DrawStatusBar(io.DisplaySize.x);
     DrawErrorPopup();
+    DrawUpdatePopup();
     ImGui::End();
 }

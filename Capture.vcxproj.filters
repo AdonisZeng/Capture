@@ -92,6 +92,12 @@
     <ClInclude Include="src\core\resource.h">
       <Filter>src\core</Filter>
     </ClInclude>
+    <ClInclude Include="src\core\version.h">
+      <Filter>src\core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\core\update.h">
+      <Filter>src\core</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\core\util.h">
@@ -180,6 +186,9 @@
       <Filter>src\core</Filter>
     </ClCompile>
     <ClCompile Include="src\core\appicon.cpp">
+      <Filter>src\core</Filter>
+    </ClCompile>
+    <ClCompile Include="src\core\update.cpp">
       <Filter>src\core</Filter>
     </ClCompile>
     <ClCompile Include="src\graphics\graphics.cpp">

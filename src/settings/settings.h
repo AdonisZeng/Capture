@@ -76,6 +76,11 @@ struct Settings
     // ---- 通用 ----
     bool         autoStart      = false; // 开机自动启动（实际生效以注册表 HKCU Run 为准）
 
+    // ---- 更新（core/update.h）----
+    bool         updateAutoCheck = true; // 启动时静默检查更新（最短间隔 24h）
+    long long    updateLastCheck = 0;    // 上次检查时刻（Unix 秒，0 = 从未检查）
+    std::wstring updateSkipTag   = L"";  // 用户选择忽略的版本（tag_name，如 v1.2.0）
+
     // ---- 界面 ----
     int          lastPage       = 0;    // 0=截屏 1=录屏
     bool         darkMode       = true; // true=深色 false=浅色

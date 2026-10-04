@@ -16,6 +16,9 @@ enum class TrayAction
     Quit,       // 退出程序
     Pause,      // 暂停/继续录制（仅录制中有效）
     OpenDir,    // 打开输出目录
+    // 注意：本成员必须是最后一个。OnMessage 用「值落在 Show..CheckUpdate 区间」
+    // 来识别主动投递的动作，新增成员必须同步放宽区间上界，否则菜单点了没反应
+    CheckUpdate,// 检查更新（跳到设置页并立即发起一次检查）
 };
 
 class TrayIcon

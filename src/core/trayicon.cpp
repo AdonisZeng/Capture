@@ -16,6 +16,7 @@ constexpr UINT IDM_PAUSE    = 40006;
 constexpr UINT IDM_OPENDIR  = 40007;
 constexpr UINT IDM_SETTINGS = 40004;
 constexpr UINT IDM_QUIT     = 40005;
+constexpr UINT IDM_CHECKUPD = 40008;
 
 // 兜底图标（仅在 exe 资源中的应用图标加载失败时使用）
 // 32bpp BGRA 图标：录制态为红色实心圆 + 白心，空闲态为灰色圆环
@@ -212,6 +213,7 @@ void TrayIcon::ShowContextMenu()
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_OPENDIR,  L"打开输出目录");
     AppendMenuW(menu, MF_STRING, IDM_SETTINGS, L"设置…");
+    AppendMenuW(menu, MF_STRING, IDM_CHECKUPD, L"检查更新…");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_QUIT,     L"退出");
 
@@ -228,6 +230,7 @@ void TrayIcon::ShowContextMenu()
     case IDM_PAUSE:    PostMessageW(hwnd_, msgId_, (WPARAM)TrayAction::Pause, 0);    break;
     case IDM_OPENDIR:  PostMessageW(hwnd_, msgId_, (WPARAM)TrayAction::OpenDir, 0);  break;
     case IDM_SETTINGS: PostMessageW(hwnd_, msgId_, (WPARAM)TrayAction::Settings, 0); break;
+    case IDM_CHECKUPD: PostMessageW(hwnd_, msgId_, (WPARAM)TrayAction::CheckUpdate, 0); break;
     case IDM_QUIT:     PostMessageW(hwnd_, msgId_, (WPARAM)TrayAction::Quit, 0);     break;
     default: break;
     }
@@ -239,8 +242,10 @@ bool TrayIcon::OnMessage(WPARAM wParam, LPARAM lParam, TrayAction& action)
     if (!hwnd_)
         return false;
 
-    // 菜单选择结果或主动投递的动作
-    if (wParam >= (WPARAM)TrayAction::Show && wParam <= (WPARAM)TrayAction::OpenDir)
+    // 菜单选择结果或主动投递的动作。
+    // 上界必须跟着 TrayAction 的最后一个成员走（见 trayicon.h 里的说明）：
+    // 用区间判断而不是 switch，新增成员忘了改这里就会变成「点了没反应」
+    if (wParam >= (WPARAM)TrayAction::Show && wParam <= (WPARAM)TrayAction::CheckUpdate)
     {
         action = (TrayAction)wParam;
         return true;

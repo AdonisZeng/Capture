@@ -72,6 +72,8 @@ struct AppState
     bool wantCursorRefresh  = false;  // 光标开关变化，实时刷到 WGC 会话
     bool wantMicTest        = false;  // 空闲时打开麦克风做电平试音（5 秒自动停）
     bool wantCancelCountdown = false; // 取消延时开始的倒计时
+    bool wantApplyUpdate    = false;  // 更新已就绪且用户确认替换：退出主进程，
+                                     // 由助手进程完成换文件（Update::Apply 已返回 true）
 
     // ---- 反馈 ----
     std::string  errPopup;      // 模态错误框（UTF-8）

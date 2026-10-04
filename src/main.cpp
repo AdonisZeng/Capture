@@ -30,6 +30,7 @@
 #include "core/autostart.h"
 #include "core/trayicon.h"
 #include "core/appicon.h"
+#include "core/update.h"
 #include "ui/ui_app.h"
 #include "ui/ui_theme.h"
 
@@ -968,6 +969,12 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 }
                 break;
             case TrayAction::Settings:  g_st.wantSettingsPage = true; break;
+            case TrayAction::CheckUpdate:
+                // 跳到设置页并立即查一次：用户是从托盘点的「检查更新…」，
+                // 期待的是马上看到结果，而不是还要自己再点一次按钮
+                g_st.wantSettingsPage = true;
+                Update::CheckNow();
+                break;
             case TrayAction::Quit:      g_st.wantQuit = true;        break;
             default: break;
             }
@@ -1010,26 +1017,72 @@ int WINAPI wWinMain(
 {
     (void)hPrevInstance; (void)lpCmdLine;
 
+    // ---- 更新助手模式 ----
+    // 必须排在单实例互斥量之前：本 exe 的第二个实例会被互斥量判定为「已有实例」
+    // 直接退出，助手就永远等不到该做的换文件动作
+    if (Update::RunApplyHelper())
+        return 0;
+
     // ---- 单实例 ----
     // 必须在 LogInit 之前判定：日志名按启动秒级时间戳生成，若第二个实例先初始化日志，
     // 同一秒启动会往同一份文件里追加；两份配置也会互相覆盖。
-    HANDLE hSingleInstance = CreateMutexW(nullptr, FALSE, L"Local\\Capture.SingleInstance");
-    if (hSingleInstance != nullptr && GetLastError() == ERROR_ALREADY_EXISTS)
+    // 更新后重启的实例带 --updated：此刻旧进程刚退出、互斥量可能还没释放，
+    // 这时要重试等待而不是秒退，否则用户会看到「程序自己关掉了且不再出现」
+    // 结果只有两种：拿到互斥量（hSingleInstance != nullptr）或确认已有实例。
+    // 不要用「曾经撞到过」的中间态做判断：重试期间一旦撞到过就算 true，
+    // 后来真抢到锁也仍会走 return 0，表现为更新后新版本起来又秒退
+    const bool isRelaunch = Update::HasRelaunchFlag();
+    HANDLE hSingleInstance = nullptr;
+    bool anotherInstance = false;
+    for (int attempt = 0; attempt < 40; ++attempt)
+    {
+        HANDLE h = CreateMutexW(nullptr, FALSE, L"Local\\Capture.SingleInstance");
+        if (h == nullptr)
+            break;                                   // 创建失败：按无互斥量继续（原行为）
+        if (GetLastError() != ERROR_ALREADY_EXISTS)
+        {
+            hSingleInstance = h;                     // 拿到互斥量
+            break;
+        }
+        CloseHandle(h);
+        if (!isRelaunch)
+        {
+            anotherInstance = true;                  // 普通实例：撞到即交给已有实例
+            break;
+        }
+        Sleep(250);                                  // 更新后重启：最多等 10s
+    }
+    // 等满 10s 仍没抢到：说明确实有实例在跑（而不是刚退出的旧进程），
+    // 此时再开一份就变成了双实例，配置与日志会互相覆盖
+    if (!hSingleInstance && isRelaunch)
+        anotherInstance = true;
+
+    if (anotherInstance)
     {
         // 已有实例在跑：把它唤到前台后直接退出，全程不碰日志与配置
         if (HWND existing = FindWindowW(kMainWndClass, nullptr))
             PostMessageW(existing, WM_CAPTURE_WAKE, 0, 0);
-        CloseHandle(hSingleInstance);
         return 0;
     }
 
     LogInit();
     LOG_INFO(L"程序入口 wWinMain");
+    if (isRelaunch)
+    {
+        LOG_INFO(L"本次为更新后重启");
+        // 新版本起来了：上次替换留下的 .old 没有用了，删掉；
+        // 万一新版本起不来而回滚了，这个文件也不会被删（那时它已被改名回去）
+        Update::CleanupStaleBackup();
+    }
     ImGui_ImplWin32_EnableDpiAwareness();
 
     // ---- 设置 ----
     LoadSettings(g_cfg);   // 内部已补全默认值
     FillDefaults(g_cfg);
+
+    // ---- 更新模块（启动静默检查，最短间隔 24h）----
+    // skipTag 必须一起传入：忽略状态只持久化在 settings.json 里
+    Update::Init(g_cfg.updateAutoCheck, g_cfg.updateLastCheck, g_cfg.updateSkipTag);
 
     // ---- 开机自启动 ----
     // 配置意愿为开但注册表缺失或 exe 位置已变时自动修复写回；
@@ -1400,6 +1453,32 @@ int WINAPI wWinMain(
         if (g_ui.ConsumeHotkeyDirty())
             ApplyHotkeys();
 
+        // ---- 更新：用户确认替换后退出本进程，助手接着换文件并重启 ----
+        if (g_st.wantApplyUpdate)
+        {
+            g_st.wantApplyUpdate = false;
+            if (g_st.IsBusy())
+            {
+                // 录制/保存中途被点（界面已禁用，这里是兜底）：助手已经起了，
+                // 但本进程不能立即消失，改为等录制收尾后由 wantQuit 正常退出
+                g_st.wantQuit = true;
+                g_st.SetToast(L"正在结束录制，退出后自动完成更新…");
+            }
+            else
+            {
+                g_st.wantQuit = true;
+            }
+            continue;
+        }
+
+        // ---- 更新：推进工作线程，发现新版本时提示一次 ----
+        if (Update::Tick(!g_st.IsBusy()))
+        {
+            const Update::Info info = Update::LatestInfo();
+            g_st.SetToast(L"发现新版本 " + Utf8ToWide(info.tag.c_str()) +
+                          L"，可在设置页更新");
+        }
+
         // ---- 捕获帧率统计（每 500ms）----
         ULONGLONG now = GetTickCount64();
         if (now - g_st.lastFpsTick >= 500)
@@ -1465,7 +1544,12 @@ int WINAPI wWinMain(
     // 异步保存线程兜底（正常退出时保存早已完成，此处 join 立即返回）
     if (g_saveThread.joinable())
         g_saveThread.join();
+    // 更新相关的运行态回写配置：检查时刻决定下次启动是否自动查，
+    // 忽略的版本决定以后还提不提（两者都由设置页/更新流程改动）
+    g_cfg.updateLastCheck = Update::LastCheckUnix();
+    g_cfg.updateSkipTag = Update::SkipTag();
     SaveSettings(g_cfg);
+    Update::Shutdown();
     if (hSingleInstance) { CloseHandle(hSingleInstance); hSingleInstance = nullptr; }
     g_hotkey.Unregister();
     g_tray.Destroy();

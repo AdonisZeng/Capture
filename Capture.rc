@@ -1,6 +1,50 @@
 // Capture.rc - application resources
 // IDI_CAPTURE is the exe main icon: Explorer / taskbar / window title bar / tray
 // all load it at runtime via LoadImageW(..., MAKEINTRESOURCEW(IDI_CAPTURE), ...).
+//
+// 本文件按 UTF-8 解析（下方 code_page 声明），故字符串表里可以直接写中文。
+// 版本号不在此处手写：一律取自 src/core/version.h，发布时只改那一个文件。
+#pragma code_page(65001)
+
+#include <winver.h>     // VS_VERSION_INFO / VS_FFI_FILEFLAGSMASK 等版本资源关键字
+
 #include "src\core\resource.h"
+#include "src\core\version.h"
 
 IDI_CAPTURE             ICON    "ico\\Capture.ico"
+
+// 版本信息：资源管理器「属性 -> 详细信息」与任务管理器「详细信息」页读这张表。
+// FILEVERSION/PRODUCTVERSION 必须是 4 段十进制，第 4 段固定 0（本项目无修订号概念）。
+// 字符串表用 0804（中文简体）+ 04B0（UTF-16）的语言/编码组合，VarFileInfo 的
+// Translation 必须与之一致，否则系统会读不到字符串、只显示数字版本。
+//
+// 注意：RC 预处理器拿不到 _DEBUG（Debug/Release 宏不会传给 rc.exe），
+// 故 FILEFLAGS 一律为 0；构建配置不体现在版本资源里。
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION CAPTURE_VERSION_MAJOR,CAPTURE_VERSION_MINOR,CAPTURE_VERSION_PATCH,0
+ PRODUCTVERSION CAPTURE_VERSION_MAJOR,CAPTURE_VERSION_MINOR,CAPTURE_VERSION_PATCH,0
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404B0"
+        BEGIN
+            VALUE "CompanyName",      "Capture"
+            VALUE "FileDescription",  "Capture 屏幕截取与录制"
+            VALUE "FileVersion",      CAPTURE_VERSION_STR
+            VALUE "InternalName",     "Capture"
+            VALUE "LegalCopyright",   "MIT License"
+            VALUE "OriginalFilename", "Capture.exe"
+            VALUE "ProductName",      "Capture"
+            VALUE "ProductVersion",   CAPTURE_VERSION_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200
+    END
+END

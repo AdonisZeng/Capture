@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>      // time：校验 updateLastCheck 不落在未来
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -221,6 +222,11 @@ void FillDefaults(Settings& s)
     ClampInt(s.lastPage, 0, 3, 0);
     ClampInt(s.windowW, 900, 3840, 1080);
     ClampInt(s.windowH, 600, 2160, 700);
+    // 上次检查时刻必须落在 (0, 现在]：负数与「未来的时间戳」都要归零。
+// 未来值（系统时间回拨、手改配置）会让 now - updateLastCheck 恒为负，
+// 距上次检查永远达不到 24h，自动检查被永久饿死且没有任何提示
+    if (s.updateLastCheck < 0 || s.updateLastCheck > (long long)time(nullptr) + 3600)
+        s.updateLastCheck = 0;
 }
 
 bool LoadSettings(Settings& s)
@@ -292,6 +298,7 @@ bool LoadSettings(Settings& s)
             else if (key == "sysAudioDevice") s.sysAudioDevice = wv;
             else if (key == "micDevice")     s.micDevice     = wv;
             else if (key == "captureMonitorDevice") s.captureMonitorDevice = wv;
+            else if (key == "updateSkipTag")  s.updateSkipTag  = wv;
             else parsed++;
         }
         else
@@ -309,6 +316,7 @@ bool LoadSettings(Settings& s)
             else if (key == "shotFormat")    s.shotFormat   = atoi(val.c_str());
             else if (key == "windowW")       s.windowW      = atoi(val.c_str());
             else if (key == "windowH")       s.windowH      = atoi(val.c_str());
+            else if (key == "updateLastCheck") s.updateLastCheck = _strtoi64(val.c_str(), nullptr, 10);
             // withAudio 是旧配置里的系统声音开关，读取时映射到 withSystemAudio 保持兼容
             else if (key == "withAudio" || key == "withSystemAudio")
                                         s.withSystemAudio = (val == "true");
@@ -321,6 +329,7 @@ bool LoadSettings(Settings& s)
             else if (key == "shotCopyClip")  s.shotCopyClip = (val == "true");
             else if (key == "darkMode")      s.darkMode     = (val == "true");
             else if (key == "autoStart")     s.autoStart    = (val == "true");
+            else if (key == "updateAutoCheck") s.updateAutoCheck = (val == "true");
             else parsed++;
         }
     }
@@ -379,7 +388,10 @@ bool SaveSettings(const Settings& s)
     fprintf(f, "  \"autoStart\": %s,\n",        s.autoStart ? "true" : "false");
     fprintf(f, "  \"darkMode\": %s,\n",         s.darkMode ? "true" : "false");
     fprintf(f, "  \"windowW\": %d,\n",          s.windowW);
-    fprintf(f, "  \"windowH\": %d\n",           s.windowH);
+    fprintf(f, "  \"windowH\": %d,\n",          s.windowH);
+    fprintf(f, "  \"updateAutoCheck\": %s,\n",  s.updateAutoCheck ? "true" : "false");
+    fprintf(f, "  \"updateLastCheck\": %lld,\n", s.updateLastCheck);
+    fprintf(f, "  \"updateSkipTag\": \"%s\"\n", JsonEscape(s.updateSkipTag).c_str());
     fprintf(f, "}\n");
     fclose(f);
 
