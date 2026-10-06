@@ -83,7 +83,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;windowsapp.lib;mfplat.lib;mfreadwrite.lib;mfuuid.lib;ole32.lib;windowscodecs.lib;shell32.lib;comctl32.lib;shlwapi.lib;propsys.lib;winhttp.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;windowsapp.lib;mfplat.lib;mfreadwrite.lib;mfuuid.lib;ole32.lib;windowscodecs.lib;shell32.lib;comctl32.lib;shlwapi.lib;propsys.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Manifest>
       <EnableSegmentHeap>true</EnableSegmentHeap>
@@ -119,7 +119,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;windowsapp.lib;mfplat.lib;mfreadwrite.lib;mfuuid.lib;ole32.lib;windowscodecs.lib;shell32.lib;comctl32.lib;shlwapi.lib;propsys.lib;winhttp.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;windowsapp.lib;mfplat.lib;mfreadwrite.lib;mfuuid.lib;ole32.lib;windowscodecs.lib;shell32.lib;comctl32.lib;shlwapi.lib;propsys.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Manifest>
       <EnableSegmentHeap>true</EnableSegmentHeap>
@@ -128,12 +128,6 @@
            漏挂的那个配置就没有（DWORD 架构与配置无关，但仍逐个写全）。 -->
       <AdditionalManifestFiles>$(ProjectDir)app.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Manifest>
-    <PostBuildEvent>
-      <!-- 发布产物：链接完顺手生成 Capture.exe.sha256，免得发布时现算、
-           算漏，或把上次残留的旧校验文件当成新的传上去。
-           只有 Release 两个配置生成，Debug 产物不发布。详见 docs/RELEASING.md 第 7 节。 -->
-      <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)tools\gen-sha256.ps1" -ExePath "$(TargetPath)"</Command>
-    </PostBuildEvent>
     <ResourceCompile>
       <!-- 图标资源脚本需按相对路径找到 ico\Capture.ico 与 src\core\resource.h -->
       <AdditionalIncludeDirectories>$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -152,7 +146,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;windowsapp.lib;mfplat.lib;mfreadwrite.lib;mfuuid.lib;ole32.lib;windowscodecs.lib;shell32.lib;comctl32.lib;shlwapi.lib;propsys.lib;winhttp.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;windowsapp.lib;mfplat.lib;mfreadwrite.lib;mfuuid.lib;ole32.lib;windowscodecs.lib;shell32.lib;comctl32.lib;shlwapi.lib;propsys.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Manifest>
       <EnableSegmentHeap>true</EnableSegmentHeap>
@@ -183,7 +177,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;windowsapp.lib;mfplat.lib;mfreadwrite.lib;mfuuid.lib;ole32.lib;windowscodecs.lib;shell32.lib;comctl32.lib;shlwapi.lib;propsys.lib;winhttp.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;windowsapp.lib;mfplat.lib;mfreadwrite.lib;mfuuid.lib;ole32.lib;windowscodecs.lib;shell32.lib;comctl32.lib;shlwapi.lib;propsys.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Manifest>
       <EnableSegmentHeap>true</EnableSegmentHeap>
@@ -192,12 +186,6 @@
            漏挂的那个配置就没有（DWORD 架构与配置无关，但仍逐个写全）。 -->
       <AdditionalManifestFiles>$(ProjectDir)app.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Manifest>
-    <PostBuildEvent>
-      <!-- 发布产物：链接完顺手生成 Capture.exe.sha256，免得发布时现算、
-           算漏，或把上次残留的旧校验文件当成新的传上去。
-           只有 Release 两个配置生成，Debug 产物不发布。详见 docs/RELEASING.md 第 7 节。 -->
-      <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)tools\gen-sha256.ps1" -ExePath "$(TargetPath)"</Command>
-    </PostBuildEvent>
     <ResourceCompile>
       <!-- 图标资源脚本需按相对路径找到 ico\Capture.ico 与 src\core\resource.h -->
       <AdditionalIncludeDirectories>$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -207,7 +195,6 @@
     <None Include="imgui\.editorconfig" />
     <None Include="imgui\.gitattributes" />
     <None Include="imgui\.gitignore" />
-    <None Include="tools\gen-sha256.ps1" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="imgui\imconfig.h" />

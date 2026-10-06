@@ -997,6 +997,7 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 // 跳到设置页并立即查一次：用户是从托盘点的「检查更新…」，
                 // 期待的是马上看到结果，而不是还要自己再点一次按钮
                 g_st.wantSettingsPage = true;
+                ArmUpdateFailurePopup();   // 与设置页按钮一致：手动失败可弹框
                 Update::CheckNow();
                 break;
             case TrayAction::Quit:      g_st.wantQuit = true;        break;

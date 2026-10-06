@@ -5,7 +5,6 @@
 #include "util.h"
 
 #include <winhttp.h>
-#include <bcrypt.h>
 #include <shellapi.h>   // ShellExecuteW：用默认浏览器打开 Release 页
 
 #include <atomic>
@@ -133,6 +132,10 @@ struct Shared
     std::wstring skipTag;          // 用户选择忽略的版本
     bool         autoCheck = true;
     long long    lastCheckUnix = 0;
+    // 失败是否可直接重试下载：仅下载阶段的失败置 true（发布信息仍有效），
+    // 检查阶段与 Apply 阶段的失败置 false（需重新检查）。只在 Failed 态有意义，
+    // 离开 Failed 即清零，避免拿着过期信息去下旧包
+    bool         failRetryDownload = false;
 };
 
 Shared         g;
@@ -153,8 +156,21 @@ void SetError(const std::string& utf8Msg)
         std::lock_guard<std::mutex> lk(g.mtx);
         g.state = Update::State::Failed;
         g.error = utf8Msg;
+        g.failRetryDownload = false;
     }
     LOG_ERR(L"更新失败: %s", Utf8ToWide(utf8Msg.c_str()).c_str());
+}
+
+// 下载阶段的失败：发布信息仍有效，可直接按原信息重试下载，无需重新检查
+void SetDownloadError(const std::string& utf8Msg)
+{
+    {
+        std::lock_guard<std::mutex> lk(g.mtx);
+        g.state = Update::State::Failed;
+        g.error = utf8Msg;
+        g.failRetryDownload = true;
+    }
+    LOG_ERR(L"更新失败(可重试下载): %s", Utf8ToWide(utf8Msg.c_str()).c_str());
 }
 
 void SetProgress(long long done, long long total)
@@ -196,11 +212,6 @@ std::wstring W(const char* s)
 bool IsSpaceAscii(char c)
 {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
-}
-
-bool IsHexDigit(char c)
-{
-    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
 
 char LowerAscii(char c)
@@ -501,7 +512,7 @@ bool SplitUrl(const std::string& url, std::wstring& host, std::wstring& path)
 
 // 打开会话：UA + 强制 TLS 1.2 及以上。
 // 切勿设置 WINHTTP_OPTION_SECURITY_FLAGS 的 IGNORE_* 标志——那等于关掉证书链校验，
-// 未签名的 exe 只剩 SHA-256 一层，而校验值也走同一条 HTTPS 通道取回
+// 而证书链是更新通道唯一的可信度来源（无签名、无哈希校验）
 bool OpenSession(HINTERNET& hSession, std::string& err)
 {
     const std::wstring ua = W(std::string("Capture/") + Update::VersionString());
@@ -765,115 +776,13 @@ FetchResult HttpGet(const std::string& url, const char* acceptHeader,
 }
 
 // ===========================================================================
-// SHA-256（BCrypt）
-// ===========================================================================
-bool Sha256File(const std::wstring& path, std::string& hexOut, std::string& err)
-{
-    hexOut.clear();
-    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (f == INVALID_HANDLE_VALUE)
-    {
-        err = "无法打开下载文件（可能已被清理）";
-        return false;
-    }
-
-    BCRYPT_ALG_HANDLE alg = nullptr;
-    BCRYPT_HASH_HANDLE hash = nullptr;
-    std::vector<UCHAR> obj;
-    bool ok = false;
-
-    auto finish = [&](bool result) {
-        if (hash) BCryptDestroyHash(hash);
-        if (alg)  BCryptCloseAlgorithmProvider(alg, 0);
-        CloseHandle(f);
-        return result;
-    };
-
-    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0)
-    {
-        err = "系统不支持 SHA-256（BCrypt 初始化失败）";
-        return finish(false);
-    }
-    DWORD objLen = 0, cb = 0;
-    if (BCryptGetProperty(alg, BCRYPT_OBJECT_LENGTH, (PUCHAR)&objLen, sizeof(objLen),
-                          &cb, 0) != 0 || objLen == 0)
-    {
-        err = "SHA-256 参数查询失败";
-        return finish(false);
-    }
-    obj.resize(objLen);
-    if (BCryptCreateHash(alg, &hash, obj.data(), objLen, nullptr, 0, 0) != 0)
-    {
-        err = "SHA-256 初始化失败";
-        return finish(false);
-    }
-
-    std::vector<UCHAR> buf(kChunkBytes);
-    for (;;)
-    {
-        DWORD n = 0;
-        if (!ReadFile(f, buf.data(), (DWORD)buf.size(), &n, nullptr))
-        {
-            wchar_t b[64] = {};
-            swprintf_s(b, 64, L"读取下载文件失败(0x%08lX)", GetLastError());
-            err = WideToUtf8Str(b);
-            return finish(false);
-        }
-        if (n == 0)
-            break;
-        if (BCryptHashData(hash, buf.data(), n, 0) != 0)
-        {
-            err = "SHA-256 计算失败";
-            return finish(false);
-        }
-    }
-
-    UCHAR digest[32] = {};
-    if (BCryptFinishHash(hash, digest, sizeof(digest), 0) != 0)
-    {
-        err = "SHA-256 收尾失败";
-        return finish(false);
-    }
-    static const char* kHex = "0123456789abcdef";
-    hexOut.reserve(64);
-    for (int i = 0; i < 32; ++i)
-    {
-        hexOut += kHex[digest[i] >> 4];
-        hexOut += kHex[digest[i] & 0x0F];
-    }
-    ok = true;
-    return finish(ok);
-}
-
-// 从 sha256sum 格式的文本里取出第一个 64 位十六进制串
-bool ParseSha256Text(const std::string& text, std::string& hexOut)
-{
-    hexOut.clear();
-    for (size_t i = 0; i < text.size(); )
-    {
-        if (!IsHexDigit(text[i])) { ++i; continue; }
-        size_t j = i;
-        while (j < text.size() && IsHexDigit(text[j])) ++j;
-        if (j - i >= 64)
-        {
-            hexOut = text.substr(i, 64);
-            for (char& c : hexOut) c = LowerAscii(c);
-            return true;
-        }
-        i = j;
-    }
-    return false;
-}
-
-// ===========================================================================
 // Release 解析
 // ===========================================================================
-// 从 assets 数组里挑出本架构的 exe 产物。
-// 优先精确匹配 Capture-<tag>-<arch>.exe（tag 原样带 v 前缀）；
-// 找不到再退到「Capture- 开头、-<arch>.exe 结尾」的产物，
-// 判据比「含架构标识」收紧，避免同 Release 里多个 exe 时挑错
-bool ParseAssets(const std::string& js, const char* arch, const std::string& tag,
+// 从 assets 数组里挑出本架构的 exe 产物。固定名、不带版本号：
+//     Capture-x64.exe / Capture-win32.exe
+// 大小写不敏感比较（GitHub 附件名原样返回，正常就是这个写法）。
+// 同一 Release 下两个架构各一个附件，不会重名。
+bool ParseAssets(const std::string& js, const char* arch,
                  std::string& name, std::string& url, long long& size)
 {
     const size_t keyPos = js.find("\"assets\"");
@@ -883,17 +792,8 @@ bool ParseAssets(const std::string& js, const char* arch, const std::string& tag
     if (lb == std::string::npos)
         return false;
 
-    // 产物命名约定：Capture-<tag>-<arch>.exe，tag 原样带 v 前缀
+    // 产物命名约定：Capture-<arch>.exe（固定名，不带版本号）
     // （docs/RELEASING.md 的发布清单用的就是这个形式）
-    std::string expectName = "Capture-";
-    expectName += tag;
-    expectName += "-";
-    expectName += arch;
-    expectName += ".exe";
-
-    std::string fallbackName, fallbackUrl;
-    long long   fallbackSize = 0;
-
     const std::string archSuffix = std::string("-") + arch + ".exe";
 
     int depth = 0;
@@ -921,21 +821,15 @@ bool ParseAssets(const std::string& js, const char* arch, const std::string& tag
                     JsonFindString(block, "browser_download_url", au))
                 {
                     JsonFindInt(block, "size", asz);
-                    if (an == expectName)
+                    // 固定名匹配（大小写不敏感）：必须同时满足前缀与架构后缀，
+                    // 避免同 Release 里其他 exe 被误挑
+                    if (StartsWithNoCase(an, "Capture-") &&
+                        EndsWithNoCase(an, archSuffix.c_str()))
                     {
                         name = an;
                         url = au;
                         size = asz;
                         return true;
-                    }
-                    // fallback：仍必须是本项目的产物命名形式，只是版本号对不上
-                    if (fallbackName.empty() &&
-                        StartsWithNoCase(an, "Capture-") &&
-                        EndsWithNoCase(an, archSuffix.c_str()))
-                    {
-                        fallbackName = an;
-                        fallbackUrl = au;
-                        fallbackSize = asz;
                     }
                 }
             }
@@ -946,13 +840,6 @@ bool ParseAssets(const std::string& js, const char* arch, const std::string& tag
         }
     }
 
-    if (!fallbackName.empty())
-    {
-        name = fallbackName;
-        url = fallbackUrl;
-        size = fallbackSize;
-        return true;
-    }
     return false;
 }
 
@@ -964,10 +851,9 @@ bool ParseRelease(const std::string& js, Update::Info& info)
     JsonFindString(js, "html_url", info.pageUrl);
     if (!ParseSemVer(info.tag, info.major, info.minor, info.patch))
         return false;
-    if (!ParseAssets(js, Update::ArchName(), info.tag, info.assetName, info.assetUrl,
+    if (!ParseAssets(js, Update::ArchName(), info.assetName, info.assetUrl,
                      info.assetSize))
         return false;
-    info.shaUrl = info.assetUrl + ".sha256";
     return true;
 }
 
@@ -1009,6 +895,7 @@ void CheckWorker()
     {
         std::lock_guard<std::mutex> lk(g.mtx);
         g.info = info;
+        g.failRetryDownload = false;
         if (!IsNewer(info.major, info.minor, info.patch) || skipped)
         {
             g.state = Update::State::UpToDate;
@@ -1039,7 +926,7 @@ void DownloadWorker()
     const std::wstring dir = TempUpdateDir();
     if (!EnsureDir(dir))
     {
-        SetError("无法创建临时目录：" + WideToUtf8Str(dir));
+        SetDownloadError("无法创建临时目录：" + WideToUtf8Str(dir));
         return;
     }
     // 产物名来自服务器（不可信输入），而它会被拼进 --apply-update 的命令行：
@@ -1061,12 +948,13 @@ void DownloadWorker()
     FILE* f = _wfsopen(dest.c_str(), L"wb", _SH_DENYRW);
     if (!f)
     {
-        SetError("无法写入临时文件：" + WideToUtf8Str(dest));
+        SetDownloadError("无法写入临时文件：" + WideToUtf8Str(dest));
         return;
     }
     {
         std::lock_guard<std::mutex> lk(g.mtx);
         g.state = Update::State::Downloading;
+        g.failRetryDownload = false;   // 已离开 Failed，标记只在 Failed 态有意义
         g.doneBytes = 0;
         g.totalBytes = info.assetSize;
     }
@@ -1086,53 +974,26 @@ void DownloadWorker()
     if (!res.ok)
     {
         DeleteFileW(dest.c_str());
-        SetError(res.err);
+        SetDownloadError(res.err);
         return;
     }
     if (info.assetSize > 0 && res.bytes != info.assetSize)
     {
         DeleteFileW(dest.c_str());
-        SetError("下载文件大小与发布信息不符（" + FormatBytes(res.bytes) + " / " +
-                 FormatBytes(info.assetSize) + "），已丢弃");
+        SetDownloadError("下载文件大小与发布信息不符（" + FormatBytes(res.bytes) + " / " +
+                         FormatBytes(info.assetSize) + "），已丢弃");
         return;
     }
 
-    // ---- SHA-256 校验 ----
-    SetState(Update::State::Verifying);
-    const FetchResult shaRes = HttpGet(info.shaUrl, nullptr, nullptr, 64 * 1024, 0);
-    if (shaRes.cancelled)
-    {
-        DeleteFileW(dest.c_str());
-        return;
-    }
-    if (!shaRes.ok)
-    {
-        DeleteFileW(dest.c_str());
-        SetError("无法获取校验文件（.sha256）：" + shaRes.err);
-        return;
-    }
-    std::string expectHex, actualHex, err;
-    if (!ParseSha256Text(shaRes.body, expectHex))
-    {
-        DeleteFileW(dest.c_str());
-        SetError("校验文件格式无法识别（需 sha256sum 格式）");
-        return;
-    }
-    if (!Sha256File(dest, actualHex, err) || actualHex != expectHex)
-    {
-        DeleteFileW(dest.c_str());
-        LOG_ERR(L"SHA-256 不匹配: 期望 %s 实际 %s (%s)", W(expectHex).c_str(),
-                W(actualHex).c_str(), W(err).c_str());
-        SetError("下载文件校验不通过，已丢弃（下载损坏或文件被替换）");
-        return;
-    }
-
+    // 完整性只核对 Release 元数据里的 size：截断/续传损坏能发现，
+    // 但等长替换发现不了。可信度只有 HTTPS 一层（见 update.h 头注释）。
     {
         std::lock_guard<std::mutex> lk(g.mtx);
         g.newFile = dest;
         g.state = Update::State::Ready;
+        g.failRetryDownload = false;
     }
-    LOG_INFO(L"新版本已下载并校验通过: %s (%s)", W(info.assetName).c_str(),
+    LOG_INFO(L"新版本已下载: %s (%s)", W(info.assetName).c_str(),
              W(FormatBytes(res.bytes)).c_str());
 }
 
@@ -1157,7 +1018,7 @@ Update::Info Update::LatestInfo()
 bool Update::Busy()
 {
     const State s = CurrentState();
-    return s == State::Checking || s == State::Downloading || s == State::Verifying;
+    return s == State::Checking || s == State::Downloading;
 }
 
 double Update::Progress()
@@ -1203,8 +1064,6 @@ std::string Update::StatusText()
         const std::string d = FormatBytes(done), t = FormatBytes(total);
         return std::string("正在下载… ") + std::to_string(pct) + "%（" + d + " / " + t + "）";
     }
-    case State::Verifying:
-        return "正在校验文件完整性…";
     case State::Ready:
         return info.tag + " 已下载完成，重启后生效";
     case State::Failed:
@@ -1289,30 +1148,63 @@ bool Update::Tick(bool appIdle)
     return true;
 }
 
-void Update::CheckNow()
+bool Update::CheckNow()
 {
     if (Busy())
-        return;
+        return false;
     State prev;
     {
         std::lock_guard<std::mutex> lk(g.mtx);
         prev = g.state;
         g.lastCheckUnix = (long long)time(nullptr);
         g.error.clear();
+        g.failRetryDownload = false;
         g.state = State::Checking;
     }
     // 起线程失败（上一轮工作线程刚结束还没被回收）时必须回滚状态：
     // 停在 Checking 且没人去改它，界面会一直显示「正在检查…」
     if (!SpawnWorker(CheckWorker))
+    {
         SetState(prev);
+        return false;
+    }
+    return true;
 }
 
-void Update::StartDownload()
+bool Update::StartDownload()
 {
     if (CurrentState() != State::Available)
-        return;
+        return false;
     if (!SpawnWorker(DownloadWorker))
+    {
         SetState(State::Available);
+        return false;
+    }
+    return true;
+}
+
+bool Update::CanRetryDownload()
+{
+    std::lock_guard<std::mutex> lk(g.mtx);
+    return g.state == State::Failed && g.failRetryDownload && !g.info.assetUrl.empty();
+}
+
+bool Update::RetryDownload()
+{
+    {
+        std::lock_guard<std::mutex> lk(g.mtx);
+        if (g.state != State::Failed || !g.failRetryDownload || g.info.assetUrl.empty())
+            return false;
+        if (g_workerAlive.load())
+            return false;
+        // 不在这里清 error：起线程失败时保持原错误文案，调用方据返回值决定
+        // 不关弹窗；DownloadWorker 成功/失败都会覆盖 error 或离开 Failed
+    }
+    // DownloadWorker 读 g.info 按原发布信息重下，不经过 Available 中转；
+    // 起线程失败则保持 Failed（调用方据返回值决定不关弹窗）
+    if (!SpawnWorker(DownloadWorker))
+        return false;
+    return true;
 }
 
 bool Update::Apply()
@@ -1326,7 +1218,7 @@ bool Update::Apply()
     }
     if (GetFileAttributesW(newFile.c_str()) == INVALID_FILE_ATTRIBUTES)
     {
-        SetError("下载文件已丢失，请重新下载");
+        SetDownloadError("下载文件已丢失，请重新下载");
         return false;
     }
 

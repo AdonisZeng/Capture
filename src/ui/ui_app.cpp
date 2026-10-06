@@ -126,6 +126,23 @@ bool UiApp::IsCapturingHotkey() const
 // ---------------------------------------------------------------------------
 // 设置页：版本与更新
 // ---------------------------------------------------------------------------
+// 用户主动点过检查/下载/重试/安装后才允许失败弹模态框：
+// 开机自动检查在无网络时失败是常态，那种只能写状态行，否则每次启动都弹框.
+// 注意 armed 是进程内一次性的武装：成功落地（UpToDate）或用户明确放弃
+// （忽略版本/稍后）时必须解除，否则手动成功一次就会让之后某次自动失败误弹。
+// Available/Ready 成功态不自动解除——下载/安装的武装靠下一步用户动作重新置位，
+// 若在此清零，StartDownload 工作线程尚未把状态切到 Downloading 的窗口期内
+// 武装会被误清（仍停在 Available 的 1~3 帧），下载失败就弹不出来了。
+// 文件作用域 static：匿名命名空间内的卡片/弹窗与对外的 ArmUpdateFailurePopup
+// （托盘手动入口用）共用同一份，避免内外两份标记漂移。
+static bool g_updateFailedArmed = false;
+
+// 对外：托盘等 UI 之外的手动入口先武装再 CheckNow（见 ui_app.h 注释）
+void ArmUpdateFailurePopup()
+{
+    g_updateFailedArmed = true;
+}
+
 namespace {
 
 // Release 正文是 Markdown 原文，直接塞进弹窗会很长；这里截断到 kNotesMaxChars
@@ -160,7 +177,28 @@ std::string ClipNotes(const std::string& notes)
 
 // 「版本与更新」卡片。高度按内容实际结束位置反算（与上方热键卡片同一手法），
 // 不写死数值：状态行在「检查中 / 有新版本 / 下载进度 / 已就绪」之间切换，
-// 行数会变，写死必然溢出
+// 行数会变，写死必然溢出（武装标记见文件作用域 g_updateFailedArmed）
+
+// 确认替换：先武装（Apply 的三条 SetError 失败都会进 Failed 弹窗），再拉起助手。
+// Apply 失败已由 Update 置 Failed 并写 ErrorText，失败弹窗会展示，不再叠 errPopup
+// （两个模态框会叠在一起）；仅当状态未进 Failed（Apply 前置拒绝且未写错误，
+// 理论上 UI 已按 Ready 设防、走不到）才 fallback 到 errPopup，避免静默无反应。
+bool TryApplyUpdate(AppState& st)
+{
+    g_updateFailedArmed = true;
+    if (Update::Apply())
+    {
+        st.wantApplyUpdate = true;
+        return true;
+    }
+    if (Update::CurrentState() != Update::State::Failed)
+    {
+        const std::string e = Update::ErrorText();
+        st.errPopup = e.empty() ? "无法启动更新助手" : e;
+    }
+    return false;
+}
+
 void DrawUpdateCard(const UiContext& ctx, float cardW)
 {
     Settings& cfg = *ctx.cfg;
@@ -194,7 +232,7 @@ void DrawUpdateCard(const UiContext& ctx, float cardW)
         HintText(status.c_str());
 
     // ---- 下载进度 ----
-    if (us == Update::State::Downloading || us == Update::State::Verifying)
+    if (us == Update::State::Downloading)
     {
         // 内缩必须写进 size_arg，不能用 SetNextItemWidth：
         // ProgressBar 走 CalcItemSize(size_arg, CalcItemWidth(), ...)，
@@ -214,13 +252,20 @@ void DrawUpdateCard(const UiContext& ctx, float cardW)
     {
         if (SecondaryButton("up_dl", "下载更新", ImVec2(110.0f, Control::Button)))
         {
-            Update::StartDownload();
-            st.SetToast(L"开始下载新版本，下载完成后请点击「重启安装」");
+            g_updateFailedArmed = true;
+            // StartDownload 起线程失败时保持 Available（调用方据返回值决定提示），
+            // 不关任何东西、不误报“已开始”，用户可直接再点一次
+            if (Update::StartDownload())
+                st.SetToast(L"开始下载新版本，下载完成后请点击「重启安装」");
+            else
+                st.SetToast(L"下载任务启动失败，请重试");
         }
         ImGui::SameLine();
         if (SecondaryButton("up_ignore", "忽略此版本", ImVec2(120.0f, Control::Button)))
         {
             Update::SkipVersion();
+            // 用户明确放弃本轮更新：解除武装，避免之后某次自动失败误弹
+            g_updateFailedArmed = false;
             st.SetToast(L"已忽略该版本，可在 24 小时后或手动再次检查");
         }
     }
@@ -230,16 +275,17 @@ void DrawUpdateCard(const UiContext& ctx, float cardW)
                           Pal::Accent()))
         {
             // Apply() 只是拉起替换助手并返回 true，真正的换文件与重启由助手完成，
-            // 故此处必须让主循环退出（wantApplyUpdate）
-            if (Update::Apply())
-                st.wantApplyUpdate = true;
-            else
-                st.errPopup = Update::ErrorText().empty() ? "无法启动更新助手"
-                                                          : Update::ErrorText();
+            // 故此处必须让主循环退出（wantApplyUpdate）；失败进 Failed 弹窗，
+            // 不再叠 errPopup（见 TryApplyUpdate）
+            TryApplyUpdate(st);
         }
         ImGui::SameLine();
         if (SecondaryButton("up_later", "稍后", ImVec2(90.0f, Control::Button)))
+        {
+            // 暂不安装：解除武装（安装按钮会重新武装），之后自动失败不打扰
+            g_updateFailedArmed = false;
             st.SetToast(L"已下载，可在设置页随时点击「重启安装」");
+        }
     }
     else
     {
@@ -249,7 +295,10 @@ void DrawUpdateCard(const UiContext& ctx, float cardW)
         if (SecondaryButton("up_check", checking ? "检查中…" : "检查更新",
                             ImVec2(120.0f, Control::Button)))
         {
-            Update::CheckNow();
+            g_updateFailedArmed = true;
+            // 起线程失败（上一轮线程未回收）时保持原状态并提示，不静默吞掉点击
+            if (!Update::CheckNow())
+                st.SetToast(L"已有更新任务在进行中，请稍后再试");
         }
         ImGui::SameLine();
         if (SecondaryButton("up_web", "打开发布页", ImVec2(120.0f, Control::Button)))
@@ -270,7 +319,7 @@ void DrawUpdateCard(const UiContext& ctx, float cardW)
         st.SetToast(autoChk ? L"已开启启动自动检查（最短间隔 24 小时）"
                             : L"已关闭启动自动检查");
     }
-    HintText("更新包来自本项目的 GitHub Releases，下载后自动校验 SHA-256；"
+    HintText("更新包来自本项目的 GitHub Releases（HTTPS 下载）；"
              "程序未做代码签名，请只从官方 Release 获取");
 
     ImGui::Unindent(pad);   // 与开头 Indent 配对
@@ -285,10 +334,154 @@ void DrawUpdateCard(const UiContext& ctx, float cardW)
 // 发现新版本的模态弹窗。latch 保证同一次发现只弹一次，
 // 「稍后」关闭后要等状态离开 Available（下载/忽略/重新检查）才允许再弹
 bool g_updatePopupLatch = false;
+// 「已就绪」保证同一结果只提示一次，离开 Ready 即复位；
+// 「失败」按错误文本去重（新的失败原因才再弹），离开 Failed 即清空——
+// 否则重试后报同样的错弹不出来
+bool g_updateReadyLatch = false;
+std::string g_updateFailedSeen;
 
-void DrawUpdatePopup()
+// 下载中的全页面浮层进度。设置页卡片里也有进度条，但用户若停在其他页
+// （尤其是从发现弹窗一点就关的路径），没有任何可见反馈，会以为“点了没反应”
+// 标题全阶段统一为一个；NoFocusOnAppearing 避免录制中突然抢走录制按钮的焦点；
+// NoFocusOnAppearing 避免录制中突然抢走录制按钮的焦点；位置用 Appearing 而非
+// FirstUseEver——主窗口移动/缩放后下一次下载能重新居中，而不是沿用首次的老坐标
+void DrawUpdateProgressOverlay()
 {
-    if (Update::CurrentState() != Update::State::Available)
+    const Update::State us = Update::CurrentState();
+    if (us != Update::State::Downloading)
+        return;
+    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(380.0f, 0.0f), ImGuiCond_Appearing);
+    if (!ImGui::Begin("正在更新", nullptr,
+                      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+                      ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+                      ImGuiWindowFlags_NoFocusOnAppearing))
+    {
+        ImGui::End();
+        return;
+    }
+    ImGui::TextWrapped("%s", Update::StatusText().c_str());
+    if (us == Update::State::Downloading)
+        ImGui::ProgressBar((float)Update::Progress(), ImVec2(-1.0f, 0.0f));
+    HintText("下载在后台进行，完成后会提示安装（窗口可拖开，不影响录制按钮）");
+    ImGui::End();
+}
+
+void DrawUpdatePopup(const UiContext& ctx)
+{
+    AppState& st = *ctx.st;
+
+    DrawUpdateProgressOverlay();
+
+    const Update::State us = Update::CurrentState();
+
+    // 成功落地即解除武装：本轮手动操作已有结果，之后若出现自动失败不应误弹。
+    // 只清 UpToDate——Available/Ready 不清：下载/安装的武装靠下一步用户动作重建，
+    // 若在此清零，StartDownload 工作线程尚未切到 Downloading 的窗口期内武装会被误清。
+    if (us == Update::State::UpToDate)
+        g_updateFailedArmed = false;
+
+    // ---- 已就绪：之前只在设置页出现按钮，不切过去就永远不知道下完了 ----
+    // 注意该弹窗是一次性的（latch）：点「稍后」关闭后不再自动重开，
+    // 用户可到设置页随时「重启安装」——避免每帧重开骚扰用户
+    if (us == Update::State::Ready)
+    {
+        if (!g_updateReadyLatch)
+        {
+            g_updateReadyLatch = true;
+            ImGui::OpenPopup("更新已就绪");
+            st.SetToast(L"新版本已下载完成，可随时重启安装");
+        }
+        if (!ImGui::BeginPopupModal("更新已就绪", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+            return;
+        const Update::Info info = Update::LatestInfo();
+        ImGui::TextColored(Pal::Accent(), "%s", info.tag.c_str());
+        ImGui::SameLine();
+        ImGui::TextDisabled("当前 %s", Update::VersionDisplay());
+        ImGui::Dummy(ImVec2(0.0f, Space::Sm));
+        ImGui::TextWrapped("%s 已下载完成，重启后生效", info.tag.c_str());
+        ImGui::Dummy(ImVec2(0.0f, Space::Md));
+        ImGui::Separator();
+        ImGui::Dummy(ImVec2(0.0f, Space::Sm));
+        // 录制/保存中不允许换文件：与设置页卡片一致，主循环里 wantApplyUpdate 也有兜底
+        constexpr float kBW = 118.0f, kBH = Control::Button;
+        ImGui::BeginDisabled(st.IsBusy());
+        if (PrimaryButton("upr_install", "重启安装", ImVec2(kBW, kBH), Pal::Accent()))
+        {
+            // 失败进 Failed 弹窗，不叠 errPopup（见 TryApplyUpdate）；成功才关本弹窗
+            if (TryApplyUpdate(st))
+                ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (SecondaryButton("upr_later", "稍后", ImVec2(70.0f, kBH)))
+        {
+            g_updateFailedArmed = false;
+            ImGui::CloseCurrentPopup();
+        }
+        if (st.IsBusy())
+            HintText("录制/保存期间暂不能替换，可稍后再来安装");
+        ImGui::EndPopup();
+        return;
+    }
+    g_updateReadyLatch = false;
+
+    // ---- 失败：之前只写设置页状态行，不在设置页就完全看不到 ----
+    if (us == Update::State::Failed)
+    {
+        // ErrorText 理论上非空（所有 SetError 都带文案），但防御性给 fallback：
+        // 空串会与 g_updateFailedSeen 初始值撞车导致永不弹框，且弹窗正文不能空
+        const std::string rawErr = Update::ErrorText();
+        const std::string err = rawErr.empty() ? "更新失败（未知错误）" : rawErr;
+        if (g_updateFailedSeen != err)
+        {
+            g_updateFailedSeen = err;
+            // 开机自动检查的失败不打扰：无网络时每次启动都弹框比不弹更糟
+            if (g_updateFailedArmed)
+            {
+                g_updateFailedArmed = false;
+                ImGui::OpenPopup("更新失败");
+            }
+        }
+        if (!ImGui::BeginPopupModal("更新失败", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+            return;
+        ImGui::PushStyleColor(ImGuiCol_Text, Pal::Danger());
+        ImGui::TextWrapped("%s", err.c_str());
+        ImGui::PopStyleColor();
+        ImGui::Dummy(ImVec2(0.0f, Space::Md));
+        ImGui::Separator();
+        ImGui::Dummy(ImVec2(0.0f, Space::Sm));
+        constexpr float kBW = 118.0f, kBH = Control::Button;
+        // 下载阶段的失败可按原发布信息直接重下（省一次检查往返）；
+        // 检查阶段的失败只能重新检查（旧信息不可信）。按钮文案据此区分
+        const bool canDl = Update::CanRetryDownload();
+        if (SecondaryButton("upf_retry", canDl ? "重试下载" : "重试", ImVec2(kBW, kBH)))
+        {
+            g_updateFailedArmed = true;
+            // 返回值决定关不关弹窗：起线程失败（上一轮线程未回收）时保持 Failed，
+            // 此时关了弹窗就再也弹不回来了，必须留着让用户再点一次
+            const bool started = canDl ? Update::RetryDownload() : Update::CheckNow();
+            if (started)
+                ImGui::CloseCurrentPopup();
+            else
+                st.SetToast(L"已有更新任务在进行中，请稍后再试");
+        }
+        ImGui::SameLine();
+        if (SecondaryButton("upf_web", "打开发布页", ImVec2(kBW, kBH)))
+        {
+            Update::OpenReleasePage();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (SecondaryButton("upf_close", "关闭", ImVec2(70.0f, kBH)))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+    g_updateFailedSeen.clear();
+
+    if (us != Update::State::Available)
     {
         g_updatePopupLatch = false;
         return;
@@ -324,8 +517,17 @@ void DrawUpdatePopup()
     constexpr float kBW = 118.0f, kBH = Control::Button;
     if (SecondaryButton("upd_dl", "下载更新", ImVec2(kBW, kBH)))
     {
-        Update::StartDownload();
-        ImGui::CloseCurrentPopup();
+        // 之前这里点了就关弹窗且无任何提示，下载进度又只在设置页看得见——
+        // “点了没反应”的观感就从这来的
+        g_updateFailedArmed = true;
+        // 起线程失败时不关弹窗不报开始，用户可直接再点（见卡片同名按钮注释）
+        if (Update::StartDownload())
+        {
+            st.SetToast(L"开始下载新版本，完成后会提示安装");
+            ImGui::CloseCurrentPopup();
+        }
+        else
+            st.SetToast(L"下载任务启动失败，请重试");
     }
     ImGui::SameLine();
     if (SecondaryButton("upd_web", "打开发布页", ImVec2(kBW, kBH)))
@@ -337,11 +539,15 @@ void DrawUpdatePopup()
     if (SecondaryButton("upd_ignore", "忽略此版本", ImVec2(kBW, kBH)))
     {
         Update::SkipVersion();
+        g_updateFailedArmed = false;
         ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
     if (SecondaryButton("upd_later", "稍后", ImVec2(70.0f, kBH)))
+    {
+        g_updateFailedArmed = false;
         ImGui::CloseCurrentPopup();
+    }
 
     ImGui::EndPopup();
 }
@@ -851,6 +1057,6 @@ void UiApp::Draw()
 
     DrawStatusBar(io.DisplaySize.x);
     DrawErrorPopup();
-    DrawUpdatePopup();
+    DrawUpdatePopup(ctx_);
     ImGui::End();
 }

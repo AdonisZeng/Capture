@@ -9,6 +9,11 @@ struct Settings;
 // 目录选择对话框（shell32 的 SHBrowseForFolder）；取消返回 false
 bool PickFolderDialog(HWND ownerHwnd, std::wstring& dir);
 
+// 用户主动发起更新动作（托盘菜单等 UI 之外的入口）时调用：允许下一次失败弹模态框。
+// 开机自动检查的失败只能写状态行，否则无网络时每次启动都打扰；该标记由设置页 /
+// 更新弹窗的检查·下载·重试·安装按钮置位，成功态自动清除、失败弹框时消费。
+void ArmUpdateFailurePopup();
+
 // 页面渲染所需的上下文（由 UiApp 持有并转发给各页面）
 struct UiContext
 {

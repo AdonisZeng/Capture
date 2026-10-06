@@ -44,9 +44,8 @@ Windows 桌面录屏应用：捕获主显示器画面 + 可选的系统声音/�
 | `src/core/util.h/.cpp` | 通用工具：编码转换、桌面路径、文件名模板展开、时间本地化等；**运行数据目录定位**（`DataRootDir`/`DataSubDir`：exe 同级优先、不可写时回退 `%APPDATA%\Capture`）、`DirIsWritable` 可写探针、`SystemBuildNumber`（ntdll `RtlGetVersion` 取真实版本号） |
 | `src/core/log.h/.cpp` | 日志模块：写入 log/ 目录下按启动时间命名的 TXT，多线程安全（目录由 `util.cpp` 的 `DataSubDir(L"log")` 定位，与配置同源） |
 | `src/core/version.h` | **版本号单一真源**（SemVer 三个整数宏 + 字符串宏）。纯宏、无 C++ 语法：Capture.rc 会 include 它，而 RC 预处理器不支持字符串化 |
-| `tools/gen-sha256.ps1` | 构建后生成 sha256sum 格式校验文件。由 Release 两配置的 `PostBuildEvent` 调用，详见「产物命名」节 |
 | `app.manifest` | 应用清单（supportedOS / PerMonitorV2 / longPathAware / UTF-8 代码页 / asInvoker / Common-Controls v6），由 vcxproj 四配置的 `<AdditionalManifestFiles>` 合入 exe |
-| `src/core/update.h/.cpp` | 应用内更新：查 GitHub Releases → 下载 exe → SHA-256 校验（BCrypt）→ 自替换替换并重启。网络与磁盘操作全在工作线程，UI 只读状态快照 |
+| `src/core/update.h/.cpp` | 应用内更新：查 GitHub Releases → 下载 exe → 自替换替换并重启。网络与磁盘操作全在工作线程，UI 只读状态快照 |
 
 ## 架构与线程模型
 
@@ -67,25 +66,9 @@ Windows 桌面录屏应用：捕获主显示器画面 + 可选的系统声音/�
 
 - **源文件必须保存为 UTF-8 编码；MSVC 编译必须带 `/utf-8`**（已在 vcxproj 四个配置中配置）。
   历史教训：UTF-8 无 BOM 的中文源文件在默认代码页 936（GBK）下会产生 C4819/C2143/C2001 等编译错误。
-- **`.ps1` 必须存为带 BOM 的 UTF-8**（与上一条同源，解释器侧的版本）：
-  构建事件调的是 `powershell.exe`（Windows PowerShell 5.1），它对无 BOM 的 `.ps1`
-  一律按 ANSI（中文系统=GBK 936）解码，中文注释被解成乱码，其中某些字节序列会连
-  行尾的引号/换行一起吞掉，报的却是**下一行赋值语句的语法错误**，完全不指向真因
-  （实测炸在 `$out = "$full.sha256"` 的收尾引号上）。`tools\gen-sha256.ps1` 里已注明。
-- **构建事件里不能用 `Get-FileHash`**：它由 `Microsoft.PowerShell.Utility` 模块导出，
-  靠模块自动加载，而 MSBuild 的 `PostBuildEvent` 环境里 `PSModulePath` 是坏的，
-  自动加载失败报「无法将"Get-FileHash"项识别为 cmdlet」。构建期脚本一律直接用
-  `System.Security.Cryptography`（只依赖 BCL）。
-- **Release 校验文件由构建生成，不要手工算**：`Capture.vcxproj` 的 Release|Win32 与
-  Release|x64 两个配置在 `PostBuildEvent` 调 `tools\gen-sha256.ps1`，链接完在 exe
-  旁写出 `Capture.exe.sha256`（sha256sum 格式：64 位小写十六进制 + 两个空格 + 文件名 + LF，
-  ASCII 无 BOM）。Debug 两个配置不生成（产物不发布）。脚本失败时非 0 退出，
-  **故意让构建红掉** —— 发布产物缺校验文件正是「应用内更新静默失效」的主因。
-  发布时只需把 exe 与 `.sha256` **成对改名**成 `Capture-<tag>-<arch>.exe[.sha256]`，
-  校验文件内容不用动（`ParseSha256Text` 只取首个 64 位十六进制段，后面的文件名无影响）。
-- 链接依赖：`d3d11.lib;dxgi.lib;d3dcompiler.lib;windowsapp.lib;mfplat.lib;mfreadwrite.lib;mfuuid.lib;ole32.lib;windowscodecs.lib;shell32.lib;comctl32.lib;shlwapi.lib;propsys.lib;winhttp.lib;bcrypt.lib`
-  （`propsys.lib` 读设备友好名的 `PropVariant` 接口；`winhttp.lib` + `bcrypt.lib`
-  供 `core/update.cpp` 做 HTTPS 与 SHA-256）。
+- 链接依赖：`d3d11.lib;dxgi.lib;d3dcompiler.lib;windowsapp.lib;mfplat.lib;mfreadwrite.lib;mfuuid.lib;ole32.lib;windowscodecs.lib;shell32.lib;comctl32.lib;shlwapi.lib;propsys.lib;winhttp.lib`
+  （`propsys.lib` 读设备友好名的 `PropVariant` 接口；`winhttp.lib`
+  供 `core/update.cpp` 做 HTTPS）。
 - **改 `winhttp` 相关代码时注意**：`winhttp.h` 只声明 Unicode 版函数，
   名字**没有** `W` 后缀（`WinHttpQueryHeaders` 而非 `WinHttpQueryHeadersW`），
   参数是 `LPCWSTR`。取单个响应头（如 `Location`）用 `WINHTTP_QUERY_LOCATION`
@@ -246,20 +229,22 @@ Windows 桌面录屏应用：捕获主显示器画面 + 可选的系统声音/�
 
 ### 安全性边界（务必如实告知用户）
 
-exe **没有 Authenticode 签名**，可信度只有两层：
+exe **没有 Authenticode 签名**，可信度只有一层：
 
 1. WinHTTP 的 HTTPS 证书链校验（默认开启；代码里**不得**设置
    `WINHTTP_OPTION_SECURITY_FLAGS` 的 `IGNORE_*` 标志），并显式要求 TLS 1.2+
-2. 发布物 SHA-256 与 Release 上的 `.sha256` 附件比对
+   （下载完整性只核对 Release 元数据里的 size，不做哈希）
 
-这两层挡得住传输损坏与中间人降级，**挡不住 CA 被攻破或本机被装根证书**。
+这层挡得住传输截断，**挡不住文件被替换、CA 被攻破或本机被装根证书**。
 给 `core/update.cpp` 加 `WinVerifyTrust` 验签才真正闭环，见 `docs/RELEASING.md`
 的「后续」一节。**在签名之前，对外不要宣称更新包「已验证来源可信」。**
 
 ### 产物命名是硬性约定
 
-`Capture-vX.Y.Z-x64.exe` + 同名 `.exe.sha256`（Win32 同理）。
+`Capture-x64.exe` / `Capture-win32.exe`（固定名，不带版本号）。
 名字对不上，用户点检查更新会得到「无法解析 GitHub 返回的发布信息」。
+固定名的原因：带版本号会导致手动下载后堆出一堆旧文件，
+桌面快捷方式也会因文件名变化而失效（自动更新是原地覆盖，不受影响）。
 详见 `docs/RELEASING.md`。
 
 ### 其他约定
@@ -322,6 +307,16 @@ Visual Studio 装在 **D 盘**，所以 `where msbuild` / `where cl` 一律找�
 
 ## 变更记录（只记功能级变更，小修不记）
 
+- 2026-10-06 更新流程可见性（Release|x64 重建通过）：
+  - 下载/校验中新增全页面浮层进度（`DrawUpdateProgressOverlay`）：之前进度只在设置页
+    卡片里，而发现弹窗一点就关且无 toast，不在设置页就表现为「点了没反应」；
+    弹窗点的下载也补了 toast。
+  - 下载完成新增全局「更新已就绪」弹窗 + toast（之前只在设置页出现按钮，无任何通知）；
+    录制/保存中安装按钮禁用，与卡片一致。
+  - 更新失败新增全局「更新失败」弹窗（含重试/打开发布页/关闭，按错误文本去重）；
+    仅用户主动操作后才弹，开机自动检查的失败只写状态行，避免无网络时每次启动都打扰。
+  - 注意：本改动须随下个 PATCH 版本发布，不可直接替换 v1.0.1 附件（exe 变了 SHA-256
+    就对不上，1.0.0 客户端会校验失败）。
 > 本节是**仓库内部**的实现记录，粒度比面向用户的 `CHANGELOG.md` 粗。
 > 发版时要写给用户看的内容整理到 `CHANGELOG.md`；发布流程见 `docs/RELEASING.md`。
 

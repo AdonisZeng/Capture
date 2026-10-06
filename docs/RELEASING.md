@@ -1,7 +1,7 @@
 # 发布流程（Release Checklist）
 
-本文是发一个 Capture 版本的完整清单。**发布窗口的产物命名与 `.sha256`
-附件是应用内自动更新能工作的硬性前提**——名字对不上，用户点「检查更新」
+本文是发一个 Capture 版本的完整清单。**发布窗口的产物命名是应用内
+自动更新能工作的硬性前提**——名字对不上，用户点「检查更新」
 会得到「无法解析 GitHub 返回的发布信息」。
 
 ## 0. 前置条件
@@ -50,17 +50,15 @@ foreach ($c in 'Release','Debug') { foreach ($p in 'x64','Win32') {
 } }
 ```
 
-发布只取 Release 产物：
+发布只取 Release 产物（文件名即发布名，不用再改名）：
 
 | 配置 | 输出 |
 | --- | --- |
-| Release \| x64 | `x64\Release\Capture.exe` |
-| Release \| Win32 | `Release\Capture.exe` |
+| Release \| x64 | `x64\Release\Capture.exe` → 发布为 `Capture-x64.exe` |
+| Release \| Win32 | `Release\Capture.exe` → 发布为 `Capture-win32.exe` |
 
-**校验文件在链接后自动生成**：Release 两个配置的 `PostBuildEvent` 会调
-`tools\gen-sha256.ps1`，在 exe 旁边写出 `Capture.exe.sha256`（sha256sum 格式）。
-所以编译完输出目录里已经是成对的两个文件，不用再手工算。
-Debug 配置不生成 —— 它的产物不发布。
+拷出来改个名即可，没有校验文件、不用算哈希。
+Debug 配置的产物不发布。
 
 ## 5. 冒烟测试（对着真实 Release 产物做）
 
@@ -126,8 +124,8 @@ tag 名必须与 `version.h` 一致，且带 `v` 前缀（小写）。
 
 ## 7. 改名为发布产物名
 
-`.sha256` 已由构建生成（第 4 节），这一步只是**连 exe 带校验文件一起改名**。
-校验文件内容不用动 —— 里面的文件名对解析器无影响，它只取首个 64 位十六进制段。
+产物名固定、不带版本号（带版本号会导致用户手动下载后堆出一堆旧文件，
+桌面快捷方式也会因文件名变化而失效；自动更新是原地覆盖，本地文件名从不改变）：
 
 ```powershell
 # 在仓库根目录执行；产物先拷到一个干净的临时目录，避免带 config/ log/
@@ -136,57 +134,21 @@ $stage = "$env:TEMP\Capture-release-v1.1.0"
 Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-# exe 与 .sha256 成对改名，别只改一个
-Copy-Item x64\Release\Capture.exe           "$stage\Capture-v1.1.0-x64.exe"
-Copy-Item x64\Release\Capture.exe.sha256    "$stage\Capture-v1.1.0-x64.exe.sha256"
-Copy-Item Release\Capture.exe               "$stage\Capture-v1.1.0-win32.exe"
-Copy-Item Release\Capture.exe.sha256        "$stage\Capture-v1.1.0-win32.exe.sha256"
+Copy-Item x64\Release\Capture.exe  "$stage\Capture-x64.exe"
+Copy-Item Release\Capture.exe      "$stage\Capture-win32.exe"
 ```
 
-> **exe 与 `.sha256` 必须成对改名。** 忘了改 `.sha256` 的名字，它就传不上去
-> （Release 附件名必须精确匹配），或者传了 `Capture.exe.sha256` 这个名字，
-> 用户下载到的是校验文件而不是程序。
->
-> **上传前对一次哈希**，确认改名过程没弄坏文件（改名不会，但拷贝可能中断）。
-> 下面这段用 `Get-FileHash`——它是手动验证，`Get-FileHash` 在 MSBuild 的
-> `PostBuildEvent` 环境里因模块自动加载失败而不可用，构建脚本因此改走
-> `System.Security.Cryptography`，两处标准不同是有原因的：
->
-> ```powershell
-> foreach ($a in 'x64','win32') {
->   $real = (Get-FileHash "$stage\Capture-v1.1.0-$a.exe" -Algorithm SHA256).Hash.ToLower()
->   $inFile = ((Get-Content "$stage\Capture-v1.1.0-$a.exe.sha256" -Raw).Trim() -split '\s+')[0]
->   if ($real -ne $inFile) { throw "校验文件对不上：$a" }
-> }
-> ```
->
-> 顺带一句：`.sha256` 里记的文件名是构建时的 `Capture.exe`，改名后不更新。
-> 应用内更新（`ParseSha256Text`）只取首个 64 位十六进制段，不受影响；
-> 但人工用 `sha256sum -c` 校验会因为文件名对不上而报「没有那个文件」，
-> 那不是校验文件坏了。
-
-校验文件的格式要求（生成端在 `tools\gen-sha256.ps1`，消费端是
-`src/core/update.cpp` 的 `ParseSha256Text`）：
-
-> **必须是连续的 64 位十六进制，且不能被换行拆开。** 解析器取「首个长度 ≥64 的
-> 连续十六进制段」，空格数量、后面的文件名都无所谓，但十六进制不能断行。
-> 当前生成的是「64 位小写十六进制 + 两个空格 + 文件名 + LF」，无 BOM、无 CRLF，
-> 与 GNU `sha256sum` 一致。
-
-**要改签名（见文末「后续」）必须先签 exe 再算哈希，顺序不能反** ——
-签名会改写文件内容。若将来在 PostBuildEvent 里插入签名步骤，把它放到
-`gen-sha256.ps1` 之前。
+> **架构后缀必须保留。** 同一个 Release 下 x64 与 win32 各一个附件，
+> GitHub 不允许重名，所以不能都叫 `Capture.exe`。
 
 ## 8. 创建 GitHub Release
 
-四个附件全部上传（缺 `.sha256` 的那个架构用户就装不了）：
+两个附件全部上传：
 
 ```powershell
 gh release create v1.1.0 `
-  "$stage\Capture-v1.1.0-x64.exe" `
-  "$stage\Capture-v1.1.0-x64.exe.sha256" `
-  "$stage\Capture-v1.1.0-win32.exe" `
-  "$stage\Capture-v1.1.0-win32.exe.sha256" `
+  "$stage\Capture-x64.exe" `
+  "$stage\Capture-win32.exe" `
   --title "Capture v1.1.0" `
   --notes-file CHANGELOG.md
 ```
@@ -197,7 +159,7 @@ gh release create v1.1.0 `
   它只返回最新的**正式**发布，草稿与预发布都不算数——勾错了等于没发
 - `--notes` 写用户看得懂的功能变化（会自动出现在应用内更新弹窗里）。
   直接用 CHANGELOG 全文也行，但建议裁掉内部实现细节
-- 上传后**自己验一遍**：用浏览器打开那个 Release 页，确认四个附件都在
+- 上传后**自己验一遍**：用浏览器打开那个 Release 页，确认两个附件都在
 
 ## 9. 发布后验证自动更新
 
@@ -222,9 +184,10 @@ gh release create v1.1.0 `
 
 ## 后续：给 exe 做代码签名
 
-当前 exe **没有 Authenticode 签名**，自动更新的可信度只依赖两层：
-WinHTTP 的 HTTPS 证书链校验 + 发布物 SHA-256 比对。这挡得住传输损坏与降级，
-挡不住 CA 被攻破或本机被装了根证书的场合。
+当前 exe **没有 Authenticode 签名**，自动更新的可信度只有一层：
+WinHTTP 的 HTTPS 证书链校验（下载完整性只核对 Release 元数据里的 size，
+不做哈希）。这挡得住传输截断，挡不住文件被替换、CA 被攻破、
+或本机被装了根证书的场合。对外不要宣称更新包「已验证来源可信」。
 
 要闭环需要一张代码签名证书（OV/EV），在第 4 步之后、第 7 步之前插入：
 
@@ -232,9 +195,8 @@ WinHTTP 的 HTTPS 证书链校验 + 发布物 SHA-256 比对。这挡得住传�
 # 用 signtool 对两个产物签名（证书需含私钥并可导出 PFX）
 & 'C:\Program Files (x86)\Windows SDK\10\bin\10.0.26100.0\x64\signtool.exe' sign /fd SHA256 `
    /f cert.pfx /p $env:CERT_PWD /tr http://timestamp.digicert.com /td SHA256 `
-   "$stage\Capture-v1.1.0-x64.exe"
-# 签名后再算 sha256（顺序不能反：签名会改文件内容）
+   "$stage\Capture-x64.exe"
 ```
 
-签完还可以在 `core/update.cpp` 的下载校验里加一步
+签完还可以在 `core/update.cpp` 的下载完成后加一步
 `WinVerifyTrust` 验签，这样才真正闭环。有签名证书之前，现有实现是可接受的。

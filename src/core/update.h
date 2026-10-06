@@ -1,20 +1,20 @@
 #pragma once
-// 应用内更新：查询 GitHub Releases -> 下载 exe -> SHA-256 校验 -> 自替换替换并重启
+// 应用内更新：查询 GitHub Releases -> 下载 exe -> 自替换替换并重启
 //
 // 更新源：本仓库的 GitHub Releases。用 /releases/latest 而不是 /releases 列表，
 // 它自动排除草稿与预发布（prerelease），正好等于「正式版」语义。
 //
 // 产物命名约定（发布时必须遵守，见 docs/RELEASING.md）：
-//     Capture-vX.Y.Z-x64.exe    Capture-vX.Y.Z-x64.exe.sha256
-//     Capture-vX.Y.Z-win32.exe  Capture-vX.Y.Z-win32.exe.sha256
-// 校验文件名固定为 <exe 名>.sha256，内容是 sha256sum 格式（十六进制 + 两空格 + 文件名）。
+//     Capture-x64.exe
+//     Capture-win32.exe
+// 固定名、不带版本号：用户手动下载覆盖时不会堆出一堆旧文件，
+// 桌面快捷方式也不会因文件名变化而失效。自动更新本来就是原地覆盖
+// （新文件移到当前 exe 路径上），本地文件名从不改变。
 //
-// 安全性：exe 没有 Authenticode 签名，可信度只依赖两层——
-//   1. WinHTTP 的 HTTPS 证书链校验（默认开启，代码里不关闭任何校验标志，
-//      并显式要求 TLS 1.2 及以上，避免老系统上协商到 TLS 1.0）
-//   2. 发布物 SHA-256 与 Release 上的 .sha256 附件比对
-// 这挡得住传输损坏与中间人降级，挡不住 CA 被攻破或本机安装了根证书的场合。
-// 真要闭环得给 exe 签名（signtool + 代码签名证书），见 docs/RELEASING.md 的「后续」。
+// 安全性：exe 没有 Authenticode 签名，可信度只有一层——
+// WinHTTP 的 HTTPS 证书链校验（默认开启，代码里不关闭任何校验标志，
+// 并显式要求 TLS 1.2 及以上）。下载完整性只核对 Release 元数据里的
+// size，不做哈希校验；这挡得住传输截断，挡不住文件被替换。
 //
 // 替换自身复用同一个 exe 的助手模式（命令行 --apply-update），不引入第二个可执行文件：
 // 运行中的 exe 不能被覆盖，但可以被改名（映像节允许 rename），故助手等旧进程退出后
@@ -38,8 +38,7 @@ enum class State
     UpToDate,    // 已是最新
     Available,   // 有新版本，等用户确认下载
     Downloading, // 下载中（Progress 有意义）
-    Verifying,   // SHA-256 校验中
-    Ready,       // 已下载并校验通过，等用户确认替换
+    Ready,       // 已下载，等用户确认替换
     Failed,      // 失败，原因见 ErrorText()
 };
 
@@ -49,9 +48,8 @@ struct Info
     std::string tag;        // tag_name，如 "v1.2.0"
     std::string notes;      // Release 正文（Markdown 原文，未加工）
     std::string pageUrl;    // Release 网页地址（下载失败时的兜底出口）
-    std::string assetName;  // 匹配到的产物名，如 Capture-v1.2.0-x64.exe
+    std::string assetName;  // 匹配到的产物名，如 Capture-x64.exe
     std::string assetUrl;   // 产物直链
-    std::string shaUrl;     // 校验文件直链（assetUrl + ".sha256"）
     long long   assetSize = 0;   // 产物字节数（下载后比对，不符即判失败）
     int         major = 0, minor = 0, patch = 0;
 };
@@ -67,7 +65,7 @@ Info         LatestInfo();
 std::string  StatusText();      // 设置页状态行（UTF-8）
 std::string  ErrorText();       // 失败原因（UTF-8），非 Failed 时为空
 double       Progress();         // 下载进度 0..1，非 Downloading 时为 0
-bool         Busy();             // Checking / Downloading / Verifying
+bool         Busy();             // Checking / Downloading
 
 // ---- 生命周期 ----
 // 启动检查：autoCheck 为配置里的开关，lastCheckUnix 为上次检查时刻（Unix 秒），
@@ -87,9 +85,11 @@ void SetAutoCheck(bool on);
 // 上次检查时刻（Unix 秒），main 在退出时落盘到 settings.json
 long long LastCheckUnix();
 
-// ---- 用户动作（均可在任意状态调用，内部自行判断是否合法）----
-void CheckNow();          // 手动检查（设置页按钮 / 托盘菜单）
-void StartDownload();     // 确认后下载并校验
+// ---- 用户动作（均返回任务是否成功启动；false 表示状态不对或已有任务在跑）----
+bool CheckNow();          // 手动检查（设置页按钮 / 托盘菜单）
+bool StartDownload();     // 确认后下载
+bool CanRetryDownload();  // Failed 且失败来自下载阶段时为 true，可直接重试下载
+bool RetryDownload();     // Failed 时直接按现有发布信息重新下载（不重新检查）
 bool Apply();             // 确认后拉起替换助手；返回 true 表示调用方应退出主进程
 void SkipVersion();       // 忽略当前 tag（由 SkipTag() 落盘到 settings.json）
 void OpenReleasePage();   // 用默认浏览器打开 Release 网页
