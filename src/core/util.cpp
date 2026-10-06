@@ -3,6 +3,7 @@
 #include <shlobj_core.h>
 #include <shellapi.h>
 #include <cstdio>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // 编码转换
@@ -39,34 +40,120 @@ std::string WideToUtf8Str(const std::wstring& s)
 }
 
 // ---------------------------------------------------------------------------
+// 系统版本
+// ---------------------------------------------------------------------------
+unsigned SystemBuildNumber()
+{
+    // RtlGetVersion：ntdll 导出，Win Vista 起就有，返回真实版本号。
+    // 不用 GetVersionEx —— 它受清单 supportedOS 影响，没写 Windows 10 就返回 6.2；
+    // 也不用 VerifyVersionInfo —— 参数填错（容易错在字段宽高序）会静默判定为「不支持」。
+    // 本地结构体按 RTL_OSVERSIONINFOW 的布局声明，不 include <winternl.h>：
+    // 那个头里的 UNICODE_STRING / NTSTATUS 会和 windows.h 打架。
+    struct RtlOsVersionInfoW
+    {
+        ULONG dwOSVersionInfoSize;
+        ULONG dwMajorVersion;
+        ULONG dwMinorVersion;
+        ULONG dwBuildNumber;
+        ULONG dwPlatformId;
+        WCHAR szCSDVersion[128];
+    };
+    using RtlGetVersionFn = LONG(WINAPI*)(RtlOsVersionInfoW*);
+
+    static const RtlGetVersionFn fn = reinterpret_cast<RtlGetVersionFn>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion"));
+    if (!fn)
+        return 0;
+
+    RtlOsVersionInfoW vi{};
+    vi.dwOSVersionInfoSize = sizeof(vi);
+    if (fn(&vi) != 0)
+        return 0;
+    // dwPlatformId == 2 (VER_PLATFORM_WIN32_NT)：挡掉 9x/ME 这类老系统
+    if (vi.dwPlatformId != 2)
+        return 0;
+    return vi.dwBuildNumber;
+}
+
+// ---------------------------------------------------------------------------
 // 目录
 // ---------------------------------------------------------------------------
 std::wstring ExeDir()
 {
-    wchar_t exePath[MAX_PATH] = {};
-    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-    std::wstring dir(exePath);
-    size_t pos = dir.find_last_of(L"\\/");
-    return (pos == std::wstring::npos) ? L"." : dir.substr(0, pos);
+    // 动态缓冲：路径超过 MAX_PATH 时翻倍重试，避免长路径安装目录下拿到半截 exe 路径
+    std::vector<wchar_t> buf(MAX_PATH);
+    for (;;)
+    {
+        const DWORD n = GetModuleFileNameW(nullptr, buf.data(), (DWORD)buf.size());
+        if (n == 0)
+            return L".";
+        if (n < buf.size() - 1)
+        {
+            std::wstring full(buf.data(), n);
+            const size_t pos = full.find_last_of(L"\\/");
+            return (pos == std::wstring::npos) ? L"." : full.substr(0, pos);
+        }
+        buf.resize(buf.size() * 2);
+    }
 }
 
-std::wstring FindDataDir(const wchar_t* name)
+bool DirIsWritable(const std::wstring& dir)
 {
-    std::wstring base = ExeDir();
-    std::wstring dir = base;
-    for (int i = 0; i < 5; ++i)
-    {
-        std::wstring candidate = dir + L"\\" + name;
-        DWORD attr = GetFileAttributesW(candidate.c_str());
-        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY))
-            return candidate;
+    if (dir.empty())
+        return false;
+    // 探针文件带 DELETE_ON_CLOSE，句柄一关就没了，不会给用户目录留垃圾
+    const std::wstring probe = dir + L"\\.capture_wtest";
+    HANDLE h = CreateFileW(probe.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        return false;
+    CloseHandle(h);
+    return true;
+}
 
-        size_t pos = dir.find_last_of(L"\\/");
-        if (pos == std::wstring::npos || dir.size() <= 3)
-            break;   // 已到盘符根
-        dir = dir.substr(0, pos);
+std::wstring DataRootDir()
+{
+    // 缓存：只在首次调用时探测可写位置。仅主线程调用（互斥量与更新助手都在
+    // 主线程/启动路径上完成），这里不做线程保护。
+    static std::wstring cached;
+    static bool         resolved = false;
+    if (resolved)
+        return cached;
+    resolved = true;
+
+    const std::wstring exeDir = ExeDir();
+    if (DirIsWritable(exeDir))
+    {
+        cached = exeDir;
+        return cached;
     }
-    return base + L"\\" + name;
+
+    // exe 目录不可写：装在 Program Files 或写保护介质上，配置与日志改放用户目录
+    PWSTR known = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &known)))
+    {
+        std::wstring appData(known);
+        CoTaskMemFree(known);
+        appData += L"\\Capture";
+        EnsureDir(appData);
+        if (DirIsWritable(appData))
+        {
+            cached = appData;
+            return cached;
+        }
+    }
+
+    // 两处都不可写（HOME 指到只读网络盘等极端情况）：仍用 exe 同级，
+    // 路径保持确定，后续写入失败各自记日志，不让程序起不来
+    cached = exeDir;
+    return cached;
+}
+
+std::wstring DataSubDir(const wchar_t* name)
+{
+    std::wstring dir = DataRootDir() + L"\\" + name;
+    EnsureDir(dir);
+    return dir;
 }
 
 std::wstring DesktopDir()

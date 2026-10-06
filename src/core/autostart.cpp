@@ -21,10 +21,11 @@ std::wstring ExePath()
     return exe;
 }
 
-// 注册表里存的启动命令：带引号包裹，路径含空格也能被 shell 正确解析
+// 注册表里存的启动命令：带引号包裹，路径含空格也能被 shell 正确解析。
+// 末尾带 --minimized：开机由 Explorer 拉起时主入口据此只驻留托盘，不弹主窗口
 std::wstring AutostartCommand()
 {
-    return L"\"" + ExePath() + L"\"";
+    return L"\"" + ExePath() + L"\" --minimized";
 }
 
 // 忽略大小写的路径比较（仅 ASCII 字母折叠，宽字符直接比较）
@@ -41,6 +42,51 @@ bool PathEqualI(const std::wstring& a, const std::wstring& b)
             return false;
     }
     return true;
+}
+
+// 命令行里是否存在独立的启动显隐标志（避免路径片段误命中，如 D:\--minimized\x.exe）
+bool HasFlagToken(const std::wstring& cmd, const wchar_t* token)
+{
+    const size_t n = wcslen(token);
+    size_t pos = 0;
+    while ((pos = cmd.find(token, pos)) != std::wstring::npos)
+    {
+        const bool leftOk = (pos == 0) || cmd[pos - 1] == L' ' || cmd[pos - 1] == L'\t' ||
+                            cmd[pos - 1] == L'"';
+        const wchar_t rc = (pos + n < cmd.size()) ? cmd[pos + n] : L'\0';
+        const bool rightOk = rc == L'\0' || rc == L' ' || rc == L'\t' || rc == L'"';
+        if (leftOk && rightOk)
+            return true;
+        pos += n;
+    }
+    return false;
+}
+
+// 注册表命令里 exe 路径部分（去引号、去参数后与当前 exe 比较）
+bool ExeMatches(const std::wstring& cmd)
+{
+    std::wstring t = cmd;
+    // 去首尾空白
+    size_t b = t.find_first_not_of(L" \t");
+    if (b == std::wstring::npos)
+        return false;
+    size_t e = t.find_last_not_of(L" \t");
+    t = t.substr(b, e - b + 1);
+    // 取 exe 部分：引号包裹取引号内，否则取到第一个空白
+    std::wstring exe;
+    if (!t.empty() && t.front() == L'"')
+    {
+        const size_t q = t.find(L'"', 1);
+        if (q == std::wstring::npos)
+            return false;
+        exe = t.substr(1, q - 1);
+    }
+    else
+    {
+        const size_t sp = t.find_first_of(L" \t");
+        exe = (sp == std::wstring::npos) ? t : t.substr(0, sp);
+    }
+    return PathEqualI(exe, ExePath());
 }
 
 // 读取 Run 键下的自启动值；不存在或非字符串类型返回 false
@@ -78,10 +124,19 @@ bool AutostartIsEnabled()
     std::wstring cmd;
     if (!ReadRunValue(cmd))
         return false;
-    // 去掉两侧引号后与当前 exe 忽略大小写比较，识别 exe 位置变化
-    if (cmd.size() >= 2 && cmd.front() == L'"' && cmd.back() == L'"')
-        cmd = cmd.substr(1, cmd.size() - 2);
-    return PathEqualI(cmd, ExePath());
+    // 只比对 exe 路径部分：带/不带 --minimized 都视为已启用（旧值缺标志时
+    // 由主入口补写迁移，而不是在这里报「未启用」让设置页开关乱跳）
+    return ExeMatches(cmd);
+}
+
+bool AutostartHasMinimizedFlag()
+{
+    std::wstring cmd;
+    if (!ReadRunValue(cmd))
+        return false;
+    if (!ExeMatches(cmd))
+        return false;
+    return HasFlagToken(cmd, L"--minimized") || HasFlagToken(cmd, L"--tray");
 }
 
 bool AutostartEnable()

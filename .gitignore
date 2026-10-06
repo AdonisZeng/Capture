@@ -58,11 +58,18 @@ _ReSharper*/
 # Application logs written by src/core/log.cpp
 /log/
 # User settings produced by src/settings/settings.cpp (per-machine state).
-# Anchored to the config dir so .vscode/settings.json stays tracked.
-/x64/*/config/
+# Runtime data lives next to the exe (core/util.cpp DataRootDir), so the dev
+# output dirs are the ones that need ignoring. Anchored to /config/ and the
+# build output dirs so .vscode/settings.json stays tracked.
 /config/
 /config/settings.json
 /config/settings.json.bak
+/x64/*/config/
+/Release/config/
+/Debug/config/
+/x64/*/log/
+/Release/log/
+/Debug/log/
 
 # ---------------------------------------------------------------------------
 # 版本管理

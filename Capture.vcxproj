@@ -87,6 +87,10 @@
     </Link>
     <Manifest>
       <EnableSegmentHeap>true</EnableSegmentHeap>
+      <!-- 发布适配：链接器默认只生成一份带随机 identity 的最小清单，缺 supportedOS /
+           PerMonitorV2 / longPathAware / UTF-8 代码页声明。四个配置都要挂，
+           漏挂的那个配置就没有（DWORD 架构与配置无关，但仍逐个写全）。 -->
+      <AdditionalManifestFiles>$(ProjectDir)app.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Manifest>
     <ResourceCompile>
       <!-- 图标资源脚本需按相对路径找到 ico\Capture.ico 与 src\core\resource.h -->
@@ -102,6 +106,13 @@
       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <!-- /MT 静态 CRT：发布物要能「在没装 VC++ 运行库的干净机器上直接双击运行」。
+           原先没写 RuntimeLibrary，Release 继承默认的 /MD，产物导入
+           MSVCP140.dll / VCRUNTIME140.dll / VCRUNTIME140_1.dll —— 那三个 DLL
+           只随「Microsoft Visual C++ Redistributable」分发，系统默认不带，
+           于是从 GitHub 下载的 exe 在别人机器上会报「VCRUNTIME140.dll 缺失」直接起不来。
+           Debug 两个配置保持 /MDd（调试 CRT 的断言/堆检查只在开发期有意义）。 -->
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(ProjectDir)imgui;$(ProjectDir)imgui\backends;$(ProjectDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
@@ -112,6 +123,10 @@
     </Link>
     <Manifest>
       <EnableSegmentHeap>true</EnableSegmentHeap>
+      <!-- 发布适配：链接器默认只生成一份带随机 identity 的最小清单，缺 supportedOS /
+           PerMonitorV2 / longPathAware / UTF-8 代码页声明。四个配置都要挂，
+           漏挂的那个配置就没有（DWORD 架构与配置无关，但仍逐个写全）。 -->
+      <AdditionalManifestFiles>$(ProjectDir)app.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Manifest>
     <PostBuildEvent>
       <!-- 发布产物：链接完顺手生成 Capture.exe.sha256，免得发布时现算、
@@ -141,6 +156,10 @@
     </Link>
     <Manifest>
       <EnableSegmentHeap>true</EnableSegmentHeap>
+      <!-- 发布适配：链接器默认只生成一份带随机 identity 的最小清单，缺 supportedOS /
+           PerMonitorV2 / longPathAware / UTF-8 代码页声明。四个配置都要挂，
+           漏挂的那个配置就没有（DWORD 架构与配置无关，但仍逐个写全）。 -->
+      <AdditionalManifestFiles>$(ProjectDir)app.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Manifest>
     <ResourceCompile>
       <!-- 图标资源脚本需按相对路径找到 ico\Capture.ico 与 src\core\resource.h -->
@@ -156,6 +175,8 @@
       <PreprocessorDefinitions>NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <!-- /MT 静态 CRT：见 Release|Win32 处的同一段说明（发布物不得依赖 VC++ 运行库）。 -->
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(ProjectDir)imgui;$(ProjectDir)imgui\backends;$(ProjectDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
@@ -166,6 +187,10 @@
     </Link>
     <Manifest>
       <EnableSegmentHeap>true</EnableSegmentHeap>
+      <!-- 发布适配：链接器默认只生成一份带随机 identity 的最小清单，缺 supportedOS /
+           PerMonitorV2 / longPathAware / UTF-8 代码页声明。四个配置都要挂，
+           漏挂的那个配置就没有（DWORD 架构与配置无关，但仍逐个写全）。 -->
+      <AdditionalManifestFiles>$(ProjectDir)app.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Manifest>
     <PostBuildEvent>
       <!-- 发布产物：链接完顺手生成 Capture.exe.sha256，免得发布时现算、

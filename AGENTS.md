@@ -29,7 +29,7 @@ Windows 桌面录屏应用：捕获主显示器画面 + 可选的系统声音/�
 | `src/ui/page_record.h/.cpp` | 录屏页：实时预览、输出位置/帧率/分辨率/码率/编码方式/音频配置（系统声音与麦克风各自开关 + 设备选择器 + 增益）、录制控制 |
 | `src/ui/ui_widgets.h/.cpp` | 控件库：按钮/开关/分段/下拉/卡片/路径行/焦点环（主控件自绘，下拉复用原生 popup） |
 | `src/ui/ui_theme.h/.cpp` | 主题：深/浅色配色、间距与控件尺寸常量、字体槽位 |
-| `src/settings/settings.h/.cpp` | 用户设置（UTF-8 JSON，原子写入）：目录/文件名模板/帧率/画质/音频（含两路开关、设备 ID、增益）/快捷键/界面/自启动意愿 |
+| `src/settings/settings.h/.cpp` | 用户设置（UTF-8 JSON，原子写入）：目录/文件名模板/帧率/画质/音频（含两路开关、设备 ID、增益）/快捷键/界面/自启动意愿。文件位置 `DataSubDir(L"config") + L"\\settings.json"`；缺失/损坏时自动重建默认配置（损坏另存 `.bak`） |
 | `src/graphics/graphics.h/.cpp` | D3D11 设备 + 交换链封装（Init/Resize/BeginFrame/Present） |
 | `src/capture/capture.h/.cpp` | `ScreenCapture`：WGC 捕获封装（`StartForMonitor`/`StartForWindow` + 内部共用的 `StartWithItem`），工作线程回调输出最新帧 BGRA 纹理 + 100ns 时间戳；`EnumerateMonitors/FindMonitor/EnumerateWindows` 供画面来源选择器使用 |
 | `src/screenshot/screenshot.h/.cpp` | `GrabLatestFrame`（纹理→CPU BGRA）/ `CropImage`（按像素矩形裁剪）/ `SaveImage`（WIC，PNG·JPEG·BMP·TIFF·GIF）/ 格式表（`ShotFormatExt`·`ShotFormatLabel`·`StripImageExtension`）/ `CopyToClipboard`（CF_DIB） |
@@ -41,9 +41,11 @@ Windows 桌面录屏应用：捕获主显示器画面 + 可选的系统声音/�
 | `src/core/trayicon.h/.cpp` | 托盘图标与菜单（隐藏窗口后台驻留） |
 | `src/core/appicon.h/.cpp` | 应用图标加载（exe 资源 IDI_CAPTURE） |
 | `src/core/autostart.h/.cpp` | 开机自启动：HKCU Run 注册表读写；启用时始终写当前 exe 路径，供启动时自愈 |
-| `src/core/log.h/.cpp` | 日志模块：写入 log/ 目录下按启动时间命名的 TXT，多线程安全 |
+| `src/core/util.h/.cpp` | 通用工具：编码转换、桌面路径、文件名模板展开、时间本地化等；**运行数据目录定位**（`DataRootDir`/`DataSubDir`：exe 同级优先、不可写时回退 `%APPDATA%\Capture`）、`DirIsWritable` 可写探针、`SystemBuildNumber`（ntdll `RtlGetVersion` 取真实版本号） |
+| `src/core/log.h/.cpp` | 日志模块：写入 log/ 目录下按启动时间命名的 TXT，多线程安全（目录由 `util.cpp` 的 `DataSubDir(L"log")` 定位，与配置同源） |
 | `src/core/version.h` | **版本号单一真源**（SemVer 三个整数宏 + 字符串宏）。纯宏、无 C++ 语法：Capture.rc 会 include 它，而 RC 预处理器不支持字符串化 |
 | `tools/gen-sha256.ps1` | 构建后生成 sha256sum 格式校验文件。由 Release 两配置的 `PostBuildEvent` 调用，详见「产物命名」节 |
+| `app.manifest` | 应用清单（supportedOS / PerMonitorV2 / longPathAware / UTF-8 代码页 / asInvoker / Common-Controls v6），由 vcxproj 四配置的 `<AdditionalManifestFiles>` 合入 exe |
 | `src/core/update.h/.cpp` | 应用内更新：查 GitHub Releases → 下载 exe → SHA-256 校验（BCrypt）→ 自替换替换并重启。网络与磁盘操作全在工作线程，UI 只读状态快照 |
 
 ## 架构与线程模型
@@ -323,8 +325,25 @@ Visual Studio 装在 **D 盘**，所以 `where msbuild` / `where cl` 一律找�
 > 本节是**仓库内部**的实现记录，粒度比面向用户的 `CHANGELOG.md` 粗。
 > 发版时要写给用户看的内容整理到 `CHANGELOG.md`；发布流程见 `docs/RELEASING.md`。
 
+- 2026-10-06 设置页热键支持按键捕获（Release|x64 重建通过）：
+  - 每行新增「更改」按钮：点击后该行进入捕获态，直接按组合键录入，
+    成功即填入并自动应用保存 + 重注册；Esc / 「取消」/ 切页作废。
+  - 新增 `HotkeyManager::Compose`（修饰键 + 主键组装规范串，裸键/不支持的主键拒绝），
+    主键集与 `Parse` 同源（A-Z / 0-9 / F1-F24 / Space / Insert / Delete /
+    Pause / Tab / Home / End / PrtSc），`KeyName` 是唯一数据源。
+  - 捕获期间主循环吞掉 `WM_HOTKEY`（`UiApp::IsCapturingHotkey`），避免按到旧组合
+    误触截图/录制；捕获行输入框禁用展示，他行输入框锁定但可切换捕获目标；
+    手动输入框与「应用并保存」保留，走同一 `ApplyAllHotkeys` 入口。
+- 2026-10-06 开机自启动只驻留托盘（Release|x64 重建通过）：
+  - 自启动注册表命令追加 ` --minimized`，开机由 Explorer 拉起时主窗口保持
+    `SW_HIDE`、仅托盘图标驻留；用户双击/正常启动仍走 `nShowCmd` 原样显示。
+  - 旧值迁移：`AutostartIsEnabled` 只比对 exe 路径（带/不带标志都算已启用，
+    设置页开关不乱跳），缺标志的旧值由主入口启动时补写一次；
+    新增 `AutostartHasMinimizedFlag` 供迁移判断，`--tray` 也认作同义标志。
+  - 更新重启透传最小化态：`Apply` → 助手 → 新版本三段命令行都携带
+    `--minimized`，开机自启后更新不会突然弹主窗口。
 - 2026-10-04 版本管理 + 应用内自动更新（Release/Debug × x64/Win32 四配置
-  重建通过；设置项改动按 AGNETS.md 要求做了 JSON 黑盒往返实测 18 项全过；
+  重建通过；设置项改动按 AGENTS.md 要求做了 JSON 黑盒往返实测 18 项全过；
   网络层对 github.com 实测 TLS/证书链/分块读取/落盘字节数一致，
   404 与 403 两条错误文案均真实触发验证）：
   - **版本单一真源** `src/core/version.h`（SemVer 宏，RC 预处理器安全），
@@ -489,6 +508,81 @@ Visual Studio 装在 **D 盘**，所以 `where msbuild` / `where cl` 一律找�
     原先会把整屏尺寸当成外框尺寸存进 `windowW/windowH`，下次启动还原成「几乎全屏」。
   - 删除已无调用方的 `ScreenCapture::Start`（`main.cpp` 一律走
     `StartPreviewCapture` → `StartForMonitor/StartForWindow`），避免捕获层多一个入口。
+
+## 发布适配（发 GitHub 前必看）
+
+「发版前要检查什么」这一节写在 `docs/RELEASING.md`，本节只记**实现层面的坑**。
+
+### 运行数据的位置：exe 同级优先，不可写时回退
+
+配置 `config/settings.json` 与日志 `log/` 都由 `core/util.cpp` 的
+`DataRootDir()` / `DataSubDir()` 定位：
+
+- **exe 目录可写**（便携模式）→ 就用它。exe 与 `config/`、`log/` 同一个文件夹，
+  拷走即带走配置。
+- **exe 目录不可写**（典型如 `C:\Program Files`）→ 回退 `%APPDATA%\Capture\`。
+  实际落点写在启动日志第一行。
+
+踩坑与约定：
+
+- **原先的实现是「从 exe 目录向上最多 5 层找已有的 `config`/`log` 子目录」**
+  （`FindDataDir` / `log.cpp` 的 `ResolveLogDir`，两份重复代码）。那是开发期的便利，
+  对发布版是隐患：exe 放在 `D:\Tools\` 时会误命中 `D:\config` 这类无关目录，
+  于是配置与日志凭空跑到别处，用户和排查问题的人都不知道去哪找。
+  现已统一到 `DataSubDir()` 一处，`FindDataDir` 已删除（`update.cpp` 里那份
+  重复的 `DirIsWritable` 也一并并回 `util.cpp`）。
+- **`DirIsWritable` 用 `FILE_FLAG_DELETE_ON_CLOSE` 探针**：句柄一关文件就没，
+  不会在用户的 exe 目录或 `%APPDATA%` 里留垃圾。注意**不要**顺手改成普通的
+  创建+删除：程序崩溃时残留的探针文件比少一个判据麻烦得多。
+- **`ExeDir()` 用动态缓冲而非 `MAX_PATH` 数组**：长路径安装目录下 `GetModuleFileNameW`
+  会被截断成半截路径，随后所有配置/日志路径全错。`update.cpp` 的 `SelfExePath()`
+  本来就是动态的，现在两边一致。
+- **配置缺失或损坏时自动重建**：文件不存在走「按默认值初始化」；
+  文件存在但解析不出（大小异常 / 缺 `{`）时，**先复制一份 `settings.json.bak`**
+  再写默认配置 —— 用户手改坏 JSON 时不该连旧设置一起丢。
+  重建前会 `s = Settings()` 清零，避免把上次解析出的半截值当成默认值写回去。
+- **`DataRootDir()` 的缓存不是线程安全的**，只允许主线程调用（配置读写、
+  `LogInit` 都在启动路径的主线程上）。
+- ⚠️ **本机 `%APPDATA%\Capture` 已存在**，且里面有一个**别的程序**留下的
+  `ScreenRecorder.ini`。回退路径撞名不是本项目引入的，但要知道这个目录不干净。
+
+### Release 必须静态链接 CRT（发布阻塞项）
+
+`vcxproj` 的 Release 两个配置写了 `<RuntimeLibrary>MultiThreaded</RuntimeLibrary>`
+（Debug 保持 `/MDd`）。原先没写，Release 继承默认 `/MD`，产物导入
+`MSVCP140.dll` / `VCRUNTIME140.dll` / `VCRUNTIME140_1.dll` —— **那三个 DLL
+只随 VC++ Redistributable 分发，系统默认不带**。本机因为装了 VS 一直正常，
+从 GitHub 下载的用户会直接报「VCRUNTIME140.dll 缺失」起不来。
+这是典型的「本地全绿、发布即废」，改链接方式后必须用
+`dumpbin /dependents` 验一次（`docs/RELEASING.md` 第 5.1 节）。
+
+### 应用清单 app.manifest
+
+根目录新增 `app.manifest`，通过 `<AdditionalManifestFiles>` 挂进
+**四个配置**（只挂 Release 会让 Debug 构不出正确清单）。内含：
+
+| 声明 | 为什么 |
+| --- | --- |
+| `supportedOS` Win10/11 | 缺了它系统按 Win7 处理进程（DPI 虚拟化、部分 API 走旧分支） |
+| `dpiAware=true/pm` + `PerMonitorV2` | 混合 DPI 多屏不糊。清单是权威来源（须在窗口创建前生效），`main.cpp` 的 `ImGui_ImplWin32_EnableDpiAwareness()` 只是运行时兜底 |
+| `longPathAware` | 配置/日志路径拼在 exe 目录上，深目录下可能超 260 |
+| `activeCodePage=UTF-8` | 本程序文件 IO 全走 W 版 API 不受影响，给第三方/系统组件兜底 |
+| `asInvoker` | 录屏要抓整个桌面，提权无必要且部分机器上会让 WGC 取不到画面 |
+| `Common-Controls v6` | 资源管理器里 exe 不显示成经典外观 |
+
+- **`<heapType>SegmentHeap</heapType>` 由 vcxproj 的 `<EnableSegmentHeap>` 自动注入，
+  `app.manifest` 里不要重复写**（mt.exe 合并时会冲突）。
+- 验证方式：`mt.exe -inputresource:<exe>;#1`（`docs/RELEASING.md` 第 5.2 节）。
+
+### 启动时检查系统版本下限
+
+`main.cpp` 在 `LogInit()` 之后立刻用 `SystemBuildNumber()`（`util.cpp`，
+走 ntdll 的 `RtlGetVersion`）判断是否 ≥ 17763，不足则弹框并退出。
+
+- **不用 `GetVersionEx`**：它受清单 `supportedOS` 影响，没声明 Win10 就返回 6.2。
+- **不用 `VerifyVersionInfo`**：参数容易填错（`dwBuildNumber` 在 16 位域里），
+  填错时静默判定为「不支持」。
+- 取不到版本号（返回 0）一律放行 —— 宁可让用户试，也不该因为探测失败把人挡在门外。
 
 ## 后续规划（未实现）
 

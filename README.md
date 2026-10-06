@@ -32,8 +32,16 @@
 
 ## 环境要求
 
-- Windows 10 1803（17763）或更高 —— 依赖 Windows.Graphics.Capture
+- Windows 10 1803（17763）或更高 —— 依赖 Windows.Graphics.Capture。
+  版本不足时程序会在启动时直接提示并退出，不会带着一个看不懂的报错继续运行。
+- **无需安装任何运行库**：发布产物静态链接 CRT，直接双击即可运行。
 - 编译需 Visual Studio 2022 及以上（MSVC v143 或更高工具集，C++20）
+
+## 下载
+
+从 [Releases](https://github.com/AdonisZeng/Capture/releases) 下载与系统架构对应的一份
+（`x64` 用于 64 位系统，`win32` 用于 32 位），连同同名 `.exe.sha256` 一起下载保存即可，
+校验文件用于自行核对文件完整性。
 
 ## 从源码编译
 
@@ -45,6 +53,11 @@
 ```
 
 产物为单文件 `Capture.exe`，无外部依赖（Dear ImGui 以源码形式内嵌在 `imgui/`）。
+Release 配置静态链接 CRT，Debug 用 `/MDd`。
+
+仓库根目录的 `app.manifest` 会由 MSBuild 合并进 exe（`AdditionalManifestFiles`，
+四个配置都挂了，漏挂的那个配置就没有），内含 `supportedOS`（Win10/11）、
+`PerMonitorV2`、长路径与 UTF-8 代码页声明 —— 缺了这些，系统会把进程按 Win7 处理。
 
 ## 使用
 
@@ -59,7 +72,22 @@
 | 开始 / 停止录制 | `Ctrl+Alt+R` |
 | 显示主窗口 | `Ctrl+Alt+C` |
 
-配置文件为 `config/settings.json`（UTF-8 JSON，原子写入），日志在 `log/` 目录。
+### 配置文件与日志
+
+配置是 UTF-8 JSON，**存放在 exe 同级的 `config/settings.json`**，日志在同级的 `log/`。
+首次启动时文件不存在，程序会自动建目录并写入一份默认配置（输出目录取桌面）。
+
+把 exe 和 `config/`、`log/` 放在同一个文件夹里，整个文件夹拷到别的机器即为「绿色版」。
+
+> **只读安装目录的例外**：如果 exe 位于不可写的位置（例如装在 `C:\Program Files`），
+> 配置与日志会自动改放 `%APPDATA%\Capture\`（即「应用数据 / 罗aming」）。
+> 实际落点会写在启动日志的第一行，删掉 `config/settings.json` 即可恢复默认设置。
+
+已知限制：
+
+- exe **未做代码签名**，首次运行时 SmartScreen 可能提示「未知发布者」，需手动选择「仍要运行」。
+- 中文界面依赖系统里的微软雅黑（`msyh.ttc`）。在删除了中文字体的精简版 Windows 上
+  界面会显示方块（不影响录制与截图功能本身）。
 
 ## 版本与更新
 
@@ -74,7 +102,7 @@
 > SHA-256 比对两层，请只从官方 Release 获取更新包。
 
 维护者发布流程见 [`docs/RELEASING.md`](docs/RELEASING.md)，
-版本变化见 [`CHANGELOG.md`](CHANGELOG.md)，架构与踩坑记录见 [`AGNETS.md`](AGNETS.md)。
+版本变化见 [`CHANGELOG.md`](CHANGELOG.md)，架构与踩坑记录见 [`AGENTS.md`](AGENTS.md)。
 
 ## 第三方组件
 

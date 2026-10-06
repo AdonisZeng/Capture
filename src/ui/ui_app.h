@@ -31,6 +31,9 @@ public:
                        const std::wstring& show);
     // 切换到指定页面（0=截屏 1=录屏 2=设置）
     void SetPage(int page);
+    // 设置页是否有热键行正在捕获按键（捕获期间主循环须吞掉 WM_HOTKEY，
+    // 否则按到旧组合会误触截图/录制）
+    bool IsCapturingHotkey() const;
     // 由主循环消费：是否需要重新注册热键
     bool ConsumeHotkeyDirty();
 

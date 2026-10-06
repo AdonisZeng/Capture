@@ -187,7 +187,9 @@ struct Cursor
 // ---------------------------------------------------------------------------
 std::wstring SettingsFilePath()
 {
-    return FindDataDir(L"config") + L"\\settings.json";
+    // 固定落在数据根目录下的 config\：优先 exe 同级（便携），exe 目录不可写时
+    // 由 DataRootDir() 回退到 %APPDATA%\Capture。见 core/util.h 的说明。
+    return DataSubDir(L"config") + L"\\settings.json";
 }
 
 namespace {
@@ -229,13 +231,32 @@ void FillDefaults(Settings& s)
         s.updateLastCheck = 0;
 }
 
+// 配置缺失或损坏时的兜底：先写一份默认配置，让文件「存在」这件事对后续代码是恒真的
+//（否则每次启动都要走一遍「文件不存在」的分支，而 SaveSettings 的失败会被静默吞掉）。
+// 损坏时先把原文件留一份 .bak：用户手改坏 JSON 的场景下不能连旧设置一起丢。
+void RecreateWithDefaults(Settings& s)
+{
+    const std::wstring path = SettingsFilePath();
+    if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES &&
+        !CopyFileW(path.c_str(), (path + L".bak").c_str(), FALSE))
+        LOG_WARN(L"旧配置备份失败(0x%08lX): %s", GetLastError(), path.c_str());
+
+    s = Settings();      // 从零开始，不带上次解析出的半截值
+    FillDefaults(s);
+    if (!SaveSettings(s))
+        LOG_WARN(L"默认配置写入失败, 本次运行结束时可能丢失设置: %s", path.c_str());
+    else
+        LOG_INFO(L"已写入默认配置: %s", path.c_str());
+}
+
 bool LoadSettings(Settings& s)
 {
     std::wstring path = SettingsFilePath();
     FILE* f = _wfsopen(path.c_str(), L"rb", _SH_DENYNO);
     if (!f)
     {
-        LOG_INFO(L"未找到配置文件, 使用默认设置: %s", path.c_str());
+        LOG_INFO(L"未找到配置文件, 按默认值初始化: %s", path.c_str());
+        RecreateWithDefaults(s);
         return false;
     }
     fseek(f, 0, SEEK_END);
@@ -244,7 +265,8 @@ bool LoadSettings(Settings& s)
     if (size <= 0 || size > 4 * 1024 * 1024)
     {
         fclose(f);
-        LOG_WARN(L"配置文件大小异常(%ld 字节), 忽略", size);
+        LOG_WARN(L"配置文件大小异常(%ld 字节), 已重建为默认配置", size);
+        RecreateWithDefaults(s);
         return false;
     }
     std::vector<char> buf((size_t)size + 1, 0);
@@ -260,14 +282,15 @@ bool LoadSettings(Settings& s)
     Cursor cur{ begin, buf.data() + got };
     if (!cur.Eat('{'))
     {
-        LOG_WARN(L"配置文件格式错误(缺少 '{'), 已忽略");
+        LOG_WARN(L"配置文件格式错误(缺少 '{'), 已重建为默认配置");
+        RecreateWithDefaults(s);
         return false;
     }
 
     int parsed = 0;
     // 第一个键之前没有逗号，故不能无条件 Eat(',')：那样光标停在 '"' 上，
     // 逗号与 '}' 都吃不到，循环会在读第一个键之前就 break —— 整个文件一个键都不加载，
-    // 每次启动全部回到默认值（实测 27 个键 -> parsed=0，详见 AGNETS.md）
+    // 每次启动全部回到默认值（实测 27 个键 -> parsed=0，详见 AGENTS.md）
     bool needComma = false;
     while (cur.p < cur.end)
     {

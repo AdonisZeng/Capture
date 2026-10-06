@@ -750,6 +750,26 @@ static void ShowMainWindow()
     FlashWindowEx(&fi);
 }
 
+// 命令行里是否存在独立的一个 token（开机自启动带 --minimized 时只驻留托盘）。
+// 按独立 token 匹配，避免 exe 路径里的片段误命中
+static bool HasStartupToken(const wchar_t* token)
+{
+    const std::wstring cmd = GetCommandLineW();
+    const size_t n = wcslen(token);
+    size_t pos = 0;
+    while ((pos = cmd.find(token, pos)) != std::wstring::npos)
+    {
+        const bool leftOk = (pos == 0) || cmd[pos - 1] == L' ' || cmd[pos - 1] == L'\t' ||
+                            cmd[pos - 1] == L'"';
+        const wchar_t rc = (pos + n < cmd.size()) ? cmd[pos + n] : L'\0';
+        const bool rightOk = rc == L'\0' || rc == L' ' || rc == L'\t' || rc == L'"';
+        if (leftOk && rightOk)
+            return true;
+        pos += n;
+    }
+    return false;
+}
+
 static void UpdateTray()
 {
     if (!g_tray.Valid())
@@ -910,6 +930,10 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_HOTKEY:
     {
+        // 设置页正在捕获按键：原样吞掉，避免按到旧组合误触截图/录制
+        // （捕获行只管录入文本，真正的注册走「自动应用」流程）
+        if (g_ui.IsCapturingHotkey())
+            return 0;
         // lParam 最高位为 1 表示热键被按住不放，忽略以避免长按连发
         if (lParam & 0x8000)
             return 0;
@@ -1067,6 +1091,26 @@ int WINAPI wWinMain(
 
     LogInit();
     LOG_INFO(L"程序入口 wWinMain");
+
+    // ---- 系统版本下限 ----
+    // 画面抓取走 Windows.Graphics.Capture（需 Win10 1803 / 内部版本 17763）。
+    // 不在这里拦的话，用户点「截图」/「开始录制」才会看到一串看不懂的
+    // 「Direct3D11CaptureFramePool 创建失败 / 0x80070490」之类的错误，
+    // 根本想不到是系统太旧。取不到版本号（返回 0）一律放行，宁可让用户试。
+    const unsigned sysBuild = SystemBuildNumber();
+    if (sysBuild != 0 && sysBuild < 17763)
+    {
+        wchar_t msg[320] = {};
+        swprintf_s(msg, 320,
+                   L"Capture 需要 Windows 10 1803（内部版本 17763）或更高版本。\n\n"
+                   L"当前系统内部版本：%u。\n\n"
+                   L"请升级 Windows 后再运行本程序。", sysBuild);
+        LOG_ERR(L"系统版本过低(内部版本 %u < 17763), 拒绝启动", sysBuild);
+        MessageBoxW(nullptr, msg, L"Capture", MB_ICONERROR);
+        LogShutdown();
+        return 1;
+    }
+
     if (isRelaunch)
     {
         LOG_INFO(L"本次为更新后重启");
@@ -1086,13 +1130,22 @@ int WINAPI wWinMain(
 
     // ---- 开机自启动 ----
     // 配置意愿为开但注册表缺失或 exe 位置已变时自动修复写回；
-    // 意愿为关则不动注册表（尊重用户在系统侧的手动调整）
+    // 意愿为关则不动注册表（尊重用户在系统侧的手动调整）。
+    // 另做一次旧值迁移：此前版本写入的命令不带 --minimized，开机会弹主窗口，
+    // 补写一次后即只驻留托盘
     if (g_cfg.autoStart && !AutostartIsEnabled())
     {
         if (AutostartEnable())
             LOG_INFO(L"开机自启动注册表已按配置修复");
         else
             LOG_WARN(L"开机自启动注册表修复失败，可在设置页重新开启");
+    }
+    else if (g_cfg.autoStart && !AutostartHasMinimizedFlag())
+    {
+        if (AutostartEnable())
+            LOG_INFO(L"开机自启动命令已补最小化标志(--minimized)");
+        else
+            LOG_WARN(L"开机自启动最小化标志补写失败");
     }
 
     // ---- 窗口 ----
@@ -1182,7 +1235,19 @@ int WINAPI wWinMain(
         }
     }
 
-    ShowWindow(g_hwnd, nShowCmd);
+    // 开机自启动（注册表命令带 --minimized）只驻留托盘，不弹主窗口；
+    // 用户双击/正常启动走 nShowCmd 原样显示
+    const bool startMinimized =
+        HasStartupToken(L"--minimized") || HasStartupToken(L"--tray");
+    if (startMinimized)
+    {
+        ShowWindow(g_hwnd, SW_HIDE);
+        LOG_INFO(L"最小化启动(--minimized): 主窗口保持隐藏，仅托盘驻留");
+    }
+    else
+    {
+        ShowWindow(g_hwnd, nShowCmd);
+    }
     LOG_INFO(L"进入消息循环");
 
     // ---- 消息循环 ----

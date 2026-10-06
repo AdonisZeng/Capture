@@ -78,7 +78,7 @@ void NoteDeviceLost(std::atomic<bool>& flag, HRESULT hr)
 // 确保暂存纹理按当前尺寸成对存在（惰性创建，尺寸变化时重建）。
 // 返回 false = 创建失败，本帧放弃。
 // 历史教训（曾致 TDR，勿回退）：这里绝不能改回延迟上下文拷贝或
-// DO_NOT_WAIT 轮询式 Map，详见 recorder.h 头部注释与 AGNETS.md。
+// DO_NOT_WAIT 轮询式 Map，详见 recorder.h 头部注释与 AGENTS.md。
 bool Recorder::EnsureStagingPair(ID3D11Device* device, const D3D11_TEXTURE2D_DESC& desc)
 {
     if (stagingTex_[0] && stagingTex_[1] && stagingW_ == desc.Width && stagingH_ == desc.Height)

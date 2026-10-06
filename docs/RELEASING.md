@@ -64,13 +64,55 @@ Debug 配置不生成 —— 它的产物不发布。
 
 ## 5. 冒烟测试（对着真实 Release 产物做）
 
-改的是同一个 exe，务必确认这四件事：
+改的是同一个 exe，务必确认这几件事：
 
 1. 启动不崩，exe 属性（属性 → 详细信息）里版本号是新版本号
 2. 设置页「版本与更新」显示当前版本正确，且点「检查更新」不报解析错误
      （下载进度条与下方「启动时自动检查更新」开关的右缘应与卡片内其他控件对齐）
 3. 录一段 10 秒，确认录制链路没被影响
 4. 截一张图，确认 WIC 存盘正常
+
+### 5.1 必查：产物没有运行库依赖
+
+发布物是「下载即用」的，任何外部 DLL 依赖都会让用户在别人机器上起不来。
+**Release 必须静态链接 CRT**（`vcxproj` 里两个 Release 配置都写了
+`<RuntimeLibrary>MultiThreaded</RuntimeLibrary>`，别删）。链接完当场验一次：
+
+```powershell
+$dumpbin = 'D:\Software\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\dumpbin.exe'
+foreach ($e in 'x64\Release\Capture.exe','Release\Capture.exe') {
+  $crt = & $dumpbin /nologo /dependents $e | Select-String 'MSVCP|VCRUNTIME|api-ms-win-crt'
+  if ($crt) { throw "$e 仍依赖 VC++ 运行库: $($crt -join ', ')" }
+  "OK $e"
+}
+```
+
+> 曾经踩过：Release 没写 `RuntimeLibrary`，默认 `/MD`，产物导入
+> `MSVCP140.dll` / `VCRUNTIME140.dll` / `VCRUNTIME140_1.dll`。
+> 那三个 DLL 只随「Visual C++ Redistributable」分发，**系统默认不带**，
+> 本机开发因为装过 VS 所以一直正常，用户从 GitHub 下载就会直接失败。
+
+### 5.2 必查：清单已合入
+
+同样两个产物，确认清单在位（缺 `supportedOS` 时系统会按 Win7 处理进程）：
+
+```powershell
+$mt = 'C:\Program Files (x86)\Windows SDK\10\bin\10.0.26100.0\x64\mt.exe'
+& $mt '-nologo' '-inputresource:x64\Release\Capture.exe;#1' '-out:m.xml'
+Select-String -Path m.xml -Pattern 'supportedOS|PerMonitorV2|longPathAware|activeCodePage|SegmentHeap'
+Remove-Item m.xml
+```
+
+### 5.3 建议：在干净目录里跑一次
+
+模拟用户首次下载：拷到一个空目录，确认 exe 自己会建出 `config\` 与 `log\`，
+且 `config\settings.json` 内容是完整默认配置（不是空文件、不是半截 JSON）。
+
+> 注意：**不要在开发树的 `x64\Release\` 里测这个**。那里已经有旧的 `config\`，
+> 程序会直接复用，看起来「没问题」其实没验证到新建逻辑。
+>
+> 也别忘了 `app.manifest` 是通过 `AdditionalManifestFiles` 挂进工程的，
+> **四个配置都要挂**，只挂 Release 会导致 Debug 构不出正确的清单。
 
 ## 6. 打 tag 并推送
 
@@ -89,6 +131,7 @@ tag 名必须与 `version.h` 一致，且带 `v` 前缀（小写）。
 
 ```powershell
 # 在仓库根目录执行；产物先拷到一个干净的临时目录，避免带 config/ log/
+# （程序运行后会在 exe 旁边建这两个目录，别把它们打进发布包）
 $stage = "$env:TEMP\Capture-release-v1.1.0"
 Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $stage | Out-Null

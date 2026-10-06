@@ -1,4 +1,5 @@
 #include "log.h"
+#include "util.h"     // DataSubDir：日志与配置共用同一个数据根
 #include <windows.h>
 #include <cstdio>
 #include <cstdarg>
@@ -11,32 +12,6 @@ static FILE*        g_logFile = nullptr;
 static std::wstring g_logPath;
 static CRITICAL_SECTION g_cs;
 static bool         g_csInit = false;
-
-// 从 exe 所在目录向上最多 5 层查找已存在的 "log" 文件夹；
-// 找不到则返回 exe 目录旁的 "log"（由调用方负责创建）
-static std::wstring ResolveLogDir()
-{
-    wchar_t exePath[MAX_PATH] = {};
-    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-    std::wstring exeDir(exePath);
-    size_t pos = exeDir.find_last_of(L"\\/");
-    exeDir = (pos == std::wstring::npos) ? L"." : exeDir.substr(0, pos);
-
-    std::wstring dir = exeDir;
-    for (int i = 0; i < 5; ++i)
-    {
-        std::wstring candidate = dir + L"\\log";
-        DWORD attr = GetFileAttributesW(candidate.c_str());
-        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY))
-            return candidate;
-
-        pos = dir.find_last_of(L"\\/");
-        if (pos == std::wstring::npos || dir.size() <= 3)   // 已到盘符根
-            break;
-        dir = dir.substr(0, pos);
-    }
-    return exeDir + L"\\log";
-}
 
 // 日志轮转：保留最近 kKeepLogs 份，其余删除。
 // 文件名固定为 yyyyMMdd_HHmmss.txt，字典序即时间序，直接排序就能判定新旧。
@@ -89,8 +64,10 @@ void LogInit()
 
     EnterCriticalSection(&g_cs);
 
-    std::wstring dir = ResolveLogDir();
-    CreateDirectoryW(dir.c_str(), nullptr);   // 已存在时失败无害
+    // 日志目录与配置文件同源（DataSubDir 内部已逐级创建）：优先 exe 同级的
+    // log 子目录（便携模式），exe 目录不可写时由 DataRootDir 回退到 %APPDATA%
+    // 下的 Capture 目录。行尾不要留反斜杠：那会被当成续行符把下一行也吃掉。
+    const std::wstring dir = DataSubDir(L"log");
 
     SYSTEMTIME st{};
     GetLocalTime(&st);

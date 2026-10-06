@@ -146,6 +146,23 @@ bool HotkeyManager::IsValidText(const std::wstring& text)
     return Parse(text, mods, vk);
 }
 
+bool HotkeyManager::Compose(bool ctrl, bool alt, bool shift, bool win, UINT vk,
+                            std::wstring& out)
+{
+    out.clear();
+    UINT mods = 0;
+    if (ctrl)  mods |= HOTKEY_MOD_CTRL;
+    if (alt)   mods |= HOTKEY_MOD_ALT;
+    if (shift) mods |= HOTKEY_MOD_SHIFT;
+    if (win)   mods |= HOTKEY_MOD_WIN;
+    if (mods == 0)
+        return false;   // 裸键不允许：既易与正常打字冲突，RegisterHotKey 也多半被系统占用
+    if (KeyName(vk) == L"?")
+        return false;   // 主键不在支持集内（与 Parse 的 KeyFromName 同源）
+    out = Format(mods, vk);
+    return true;
+}
+
 bool HotkeyManager::BindOne(HWND hwnd, int id, const std::wstring& text,
                             std::wstring& out, std::wstring& err)
 {

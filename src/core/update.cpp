@@ -69,6 +69,32 @@ const char* Update::ArchName()
 #endif
 }
 
+// 最小化启动标志透传（开机自启 --minimized 经 Apply → 助手 → 新版本）。
+// 文件顶部定义：Apply 在文件靠前位置，而 HasToken 在文件靠后的匿名命名空间里，
+// 在那里直接调用会因声明不可见而编译失败
+namespace {
+bool StartupMinimizedFlagPresent()
+{
+    const std::wstring cmd = GetCommandLineW();
+    const wchar_t* tokens[2] = { L"--minimized", L"--tray" };
+    for (const wchar_t* token : tokens)
+    {
+        const size_t n = wcslen(token);
+        size_t pos = 0;
+        while ((pos = cmd.find(token, pos)) != std::wstring::npos)
+        {
+            const bool leftOk = (pos == 0) || cmd[pos - 1] == L' ' ||
+                                cmd[pos - 1] == L'\t' || cmd[pos - 1] == L'"';
+            const wchar_t rc = (pos + n < cmd.size()) ? cmd[pos + n] : L'\0';
+            if (leftOk && (rc == L'\0' || rc == L' ' || rc == L'\t' || rc == L'"'))
+                return true;
+            pos += n;
+        }
+    }
+    return false;
+}
+}   // namespace
+
 // ===========================================================================
 // 常量与共享状态
 // ===========================================================================
@@ -257,17 +283,8 @@ std::wstring TempUpdateDir()
     return dir + L"Capture-update";
 }
 
-// 目录是否可写（建一个设了 DELETE_ON_CLOSE 的探针文件，不留痕迹）
-bool DirIsWritable(const std::wstring& dir)
-{
-    const std::wstring probe = dir + L"\\.capture_wtest";
-    HANDLE h = CreateFileW(probe.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                           FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
-    if (h == INVALID_HANDLE_VALUE)
-        return false;
-    CloseHandle(h);
-    return true;
-}
+// 目录是否可写：已迁到 core/util.cpp（DirIsWritable），与配置/日志的可写判定
+// 走同一份实现，避免两处探针逻辑漂移
 
 // ===========================================================================
 // 极简 JSON 取值
@@ -1329,9 +1346,12 @@ bool Update::Apply()
 
     // 助手就是本 exe 的另一个实例，带 --apply-update 运行。
     // 命令行按 CreateProcessW 规则手工加引号：lpCommandLine 不会被规范化，
-    // GetCommandLineW 拿到的就是这一串，助手按同样的引号规则解析
+    // GetCommandLineW 拿到的就是这一串，助手按同样的引号规则解析。
+    // 最小化启动态一并透传：开机自启（--minimized）后更新重启不应突然弹主窗口
     std::wstring args = L"\"" + self + L"\" --apply-update \"" + newFile + L"\" --pid " +
                         std::to_wstring(GetCurrentProcessId());
+    if (StartupMinimizedFlagPresent())
+        args += L" --minimized";
     std::vector<wchar_t> argBuf(args.begin(), args.end());
     argBuf.push_back(L'\0');
 
@@ -1512,8 +1532,11 @@ bool Update::RunApplyHelper()
     }
 
     // 拉起新版本。带 --updated：新实例据此重试等待单实例互斥量，
-    // 否则旧进程刚退出、互斥量尚未释放时会被判定成「已有实例」而秒退
+    // 否则旧进程刚退出、互斥量尚未释放时会被判定成「已有实例」而秒退。
+    // 最小化启动态一并透传（见 Apply 的注释）
     std::wstring args = L"\"" + self + L"\" --updated";
+    if (HasToken(L"--minimized") || HasToken(L"--tray") || StartupMinimizedFlagPresent())
+        args += L" --minimized";
     std::vector<wchar_t> argBuf(args.begin(), args.end());
     argBuf.push_back(L'\0');
     STARTUPINFOW si = {};

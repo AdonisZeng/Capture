@@ -26,6 +26,9 @@ const char* const kPageNames[kPageCount] = { "截屏", "录屏", "设置" };
 // 热键编辑缓冲（与设置页共用，SetHotkeyText 会同步实际生效值）
 constexpr int kHotkeyCount = 3;
 char g_hkEdit[kHotkeyCount][64] = {};
+// 正在捕获按键的热键行（-1 = 无）。点「更改」后进入，捕获成功自动应用，
+// Esc/切页/再点取消。主循环据此吞掉 WM_HOTKEY，避免按到旧组合误触
+int g_hkCapturing = -1;
 
 void CopyToBuf(char* dst, size_t cap, const std::wstring& s)
 {
@@ -108,9 +111,16 @@ void UiApp::SetPage(int page)
 {
     if (page < 0 || page >= kPageCount)
         return;
+    if (page != page_)
+        g_hkCapturing = -1;   // 切页作废未完成的按键捕获（否则热键被一直吞掉）
     page_ = page;
     if (cfg_)
         cfg_->lastPage = page;
+}
+
+bool UiApp::IsCapturingHotkey() const
+{
+    return g_hkCapturing != -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +353,95 @@ void DrawUpdatePopup()
 // ---------------------------------------------------------------------------
 namespace {
 
+// 三行热键统一应用：校验 -> 写配置 -> 通知主循环重注册 -> 落盘。
+// 手动输入的「应用并保存」与按键捕获的自动应用走同一入口
+bool ApplyAllHotkeys(const UiContext& ctx)
+{
+    Settings& cfg = *ctx.cfg;
+    AppState& st = *ctx.st;
+    std::wstring texts[kHotkeyCount] = {
+        Utf8ToWide(g_hkEdit[0]),
+        Utf8ToWide(g_hkEdit[1]),
+        Utf8ToWide(g_hkEdit[2]),
+    };
+    for (int i = 0; i < kHotkeyCount; ++i)
+    {
+        if (!HotkeyManager::IsValidText(texts[i]))
+        {
+            st.errPopup = "热键格式无法识别，请参照下方说明";
+            return false;
+        }
+    }
+    cfg.hotkeyCapture = texts[0];
+    cfg.hotkeyRecord  = texts[1];
+    cfg.hotkeyShow    = texts[2];
+    *ctx.hotkeyDirty = true;
+    SaveSettings(cfg);
+    st.SetToast(L"热键设置已保存，正在重新注册…");
+    return true;
+}
+
+// 捕获行每帧轮询：Esc 取消；主键按下 + 修饰键 -> 组装 -> 填入 -> 自动应用。
+// 注意先按住修饰键再按主键：主键先落下那一刻修饰键还没就位，会提示重按一次
+void PollHotkeyCapture(const UiContext& ctx, int row)
+{
+    AppState& st = *ctx.st;
+
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+    {
+        g_hkCapturing = -1;
+        st.SetToast(L"已取消更改热键");
+        return;
+    }
+
+    UINT hitVk = 0;
+    for (int c = 0; c < 26 && !hitVk; ++c)   // A-Z（枚举连续，见 imgui.h）
+        if (ImGui::IsKeyPressed((ImGuiKey)(ImGuiKey_A + c), false))
+            hitVk = (UINT)('A' + c);
+    for (int c = 0; c < 10 && !hitVk; ++c)   // 0-9
+        if (ImGui::IsKeyPressed((ImGuiKey)(ImGuiKey_0 + c), false))
+            hitVk = (UINT)('0' + c);
+    for (int c = 0; c < 24 && !hitVk; ++c)   // F1-F24
+        if (ImGui::IsKeyPressed((ImGuiKey)(ImGuiKey_F1 + c), false))
+            hitVk = (UINT)(VK_F1 + c);
+    if (!hitVk)
+    {
+        // 其余主键只收 Parse 支持集内的（与 KeyFromName 同源），无关按键直接忽略
+        static const struct { ImGuiKey key; UINT vk; } kSpecial[] = {
+            { ImGuiKey_Space,       VK_SPACE    },
+            { ImGuiKey_Insert,      VK_INSERT   },
+            { ImGuiKey_Delete,      VK_DELETE   },
+            { ImGuiKey_Pause,       VK_PAUSE    },
+            { ImGuiKey_Tab,         VK_TAB      },
+            { ImGuiKey_Home,        VK_HOME     },
+            { ImGuiKey_End,         VK_END       },
+            { ImGuiKey_PrintScreen, VK_SNAPSHOT },
+        };
+        for (const auto& s : kSpecial)
+        {
+            if (ImGui::IsKeyPressed(s.key, false))
+            {
+                hitVk = s.vk;
+                break;
+            }
+        }
+    }
+    if (!hitVk)
+        return;   // 纯修饰键或无关按键：继续等
+
+    const ImGuiIO& io = ImGui::GetIO();
+    std::wstring composed;
+    if (!HotkeyManager::Compose(io.KeyCtrl, io.KeyAlt, io.KeyShift, io.KeySuper,
+                                hitVk, composed))
+    {
+        st.SetToast(L"组合键至少需要一个修饰键（Ctrl/Alt/Shift/Win），请重新按键");
+        return;
+    }
+    CopyToBuf(g_hkEdit[row], sizeof(g_hkEdit[row]), composed);
+    g_hkCapturing = -1;
+    ApplyAllHotkeys(ctx);   // 成功则 toast「已保存…」，失败（别行非法）弹格式说明
+}
+
 void DrawSettingsPage(const UiContext& ctx)
 {
     Settings& cfg = *ctx.cfg;
@@ -371,8 +470,11 @@ void DrawSettingsPage(const UiContext& ctx)
     // 缩进一个 pad，让循环内每组的标题/输入框/说明、以及底部格式说明都保持同一左缘留白
     ImGui::Indent(pad);
 
-    // 右侧需留出「实际生效」文本的位置，输入宽度据此反推
+    // 右侧需留出「更改按钮 + 实际生效文本」的位置，输入宽度据此反推。
+    // 按钮高传 0：SecondaryButton 会回退到 GetFrameHeight()，与输入框同高
     float fieldW = cardW - pad * 2.0f - 150.0f;
+    constexpr float kChangeBtnW = 76.0f;
+    const float hkInputW = fieldW - kChangeBtnW - ImGui::GetStyle().ItemSpacing.x;
     constexpr size_t kHotkeyBufSize = sizeof(g_hkEdit[0]);
     struct Row
     {
@@ -387,22 +489,54 @@ void DrawSettingsPage(const UiContext& ctx)
         { "显示主窗口", "从托盘恢复窗口",           ctx.hotkeyShow.c_str(),    g_hkEdit[2] },
     };
 
-    bool anyInvalid = false;
     for (int i = 0; i < kHotkeyCount; ++i)
     {
         ImGui::PushID(i);
         SectionTitle(rows[i].label);
 
-        bool valid = HotkeyManager::IsValidText(Utf8ToWide(rows[i].buf));
-        if (!valid)
-            anyInvalid = true;
-
-        if (!valid)
-            ImGui::PushStyleColor(ImGuiCol_FrameBg, Pal::ErrorFieldBg());
-        ImGui::SetNextItemWidth(fieldW);
-        ImGui::InputText("##hk", rows[i].buf, kHotkeyBufSize);
-        if (!valid)
-            ImGui::PopStyleColor();
+        const bool capturing = (g_hkCapturing == i);
+        bool valid = true;
+        if (capturing)
+        {
+            // 捕获态：输入框只做提示展示（禁用防编辑），按键轮询见 PollHotkeyCapture
+            char prompt[96] = {};
+            strncpy_s(prompt, "请按下组合键…（Esc 取消）", _TRUNCATE);
+            ImGui::BeginDisabled();
+            ImGui::SetNextItemWidth(hkInputW);
+            ImGui::InputText("##hkcap", prompt, sizeof(prompt),
+                             ImGuiInputTextFlags_ReadOnly);
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (SecondaryButton("hk_cancel", "取消", ImVec2(kChangeBtnW, 0.0f)))
+            {
+                g_hkCapturing = -1;
+                st.SetToast(L"已取消更改热键");
+            }
+            PollHotkeyCapture(ctx, i);
+        }
+        else
+        {
+            valid = HotkeyManager::IsValidText(Utf8ToWide(rows[i].buf));
+            // 别行捕获中：本行输入框禁用（按键只进捕获行），「更改」可点（切换捕获目标）
+            const bool locked = (g_hkCapturing != -1);
+            if (locked)
+                ImGui::BeginDisabled();
+            if (!valid)
+                ImGui::PushStyleColor(ImGuiCol_FrameBg, Pal::ErrorFieldBg());
+            ImGui::SetNextItemWidth(hkInputW);
+            ImGui::InputText("##hk", rows[i].buf, kHotkeyBufSize);
+            if (!valid)
+                ImGui::PopStyleColor();
+            if (locked)
+                ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (SecondaryButton("hk_change", "更改", ImVec2(kChangeBtnW, 0.0f)))
+            {
+                // 点下按钮的同时输入框已被逐出焦点（点击即换 ActiveId），
+                // 且捕获期间三行输入框全是禁用态，按键落不进任何框里
+                g_hkCapturing = i;
+            }
+        }
 
         std::string effText = rows[i].eff[0] ? WideToUtf8Str(rows[i].eff) : std::string("未生效");
         ImGui::SameLine();
@@ -414,7 +548,9 @@ void DrawSettingsPage(const UiContext& ctx)
 
         // 错误不能只靠底色传达：色觉障碍用户无法分辨红底与普通底，
         // 故底色之外必须给出文字说明，且占用与说明同一行以保持行高稳定
-        if (valid)
+        if (capturing)
+            HintText("先按住修饰键（Ctrl/Alt/Shift/Win），再按主键（A-Z / 0-9 / F1-F12 等）");
+        else if (valid)
             HintText(rows[i].desc);
         else
             HintTextColored("格式无法识别，请参照下方说明修正", Pal::Danger());
@@ -435,21 +571,7 @@ void DrawSettingsPage(const UiContext& ctx)
 
     ImGui::SetCursorScreenPos(ImVec2(cardMin.x + pad, cardMax.y + Space::Md));
     if (SecondaryButton("apply_hk", "应用并保存", ImVec2(140.0f, Control::Button)))
-    {
-        if (anyInvalid)
-        {
-            st.errPopup = "热键格式无法识别，请参照下方说明";
-        }
-        else
-        {
-            cfg.hotkeyCapture = Utf8ToWide(g_hkEdit[0]);
-            cfg.hotkeyRecord  = Utf8ToWide(g_hkEdit[1]);
-            cfg.hotkeyShow    = Utf8ToWide(g_hkEdit[2]);
-            *ctx.hotkeyDirty = true;
-            SaveSettings(cfg);
-            st.SetToast(L"热键设置已保存，正在重新注册…");
-        }
-    }
+        ApplyAllHotkeys(ctx);   // 手动输入入口；按键捕获成功后同样走这里自动应用
     ImGui::SameLine();
     if (SecondaryButton("open_cfg_dir", "打开配置目录", ImVec2(140.0f, Control::Button)))
     {

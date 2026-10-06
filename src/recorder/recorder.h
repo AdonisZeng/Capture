@@ -4,7 +4,7 @@
 // 视频采用系统内存写入路径：GPU 纹理 -> staging 暂存纹理 -> CPU 缓冲。
 // 不使用 MF_SINK_WRITER_D3D_MANAGER（GPU 纹理直写在 AMD 硬编上会
 // WriteSample E_INVALIDARG / MF_E_HW_MFT_FAILED_START_STREAMING）。
-// 回读约定（重要，曾致 TDR，详见 AGNETS.md 踩坑记录）：
+// 回读约定（重要，曾致 TDR，详见 AGENTS.md 踩坑记录）：
 //   1. 拷贝一律走立即上下文，绝不用延迟上下文（CreateDeferredContext /
 //      ExecuteCommandList 以 60fps 回放会触发 AMD 驱动内部错误）；
 //   2. 双暂存错帧回读：本帧只拷贝，读的是上一帧的拷贝（GPU 已有一帧

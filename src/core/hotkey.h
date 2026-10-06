@@ -25,6 +25,9 @@ public:
     // "Ctrl+Alt+S" -> (mods, vk)。支持 Ctrl/Alt/Shift/Win + A-Z 0-9 F1-F12 Space Insert Delete
     static bool Parse(const std::wstring& text, UINT& mods, UINT& vk);
     static std::wstring Format(UINT mods, UINT vk);
+    // 由按键捕获直接组装规范串（至少需要一个修饰键，主键须在支持集内）；失败返回 false
+    static bool Compose(bool ctrl, bool alt, bool shift, bool win, UINT vk,
+                        std::wstring& out);
     // 文本可被解析
     static bool IsValidText(const std::wstring& text);
 
