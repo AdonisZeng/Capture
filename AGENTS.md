@@ -66,9 +66,9 @@ Windows 桌面录屏应用：捕获主显示器画面 + 可选的系统声音/�
 
 - **源文件必须保存为 UTF-8 编码；MSVC 编译必须带 `/utf-8`**（已在 vcxproj 四个配置中配置）。
   历史教训：UTF-8 无 BOM 的中文源文件在默认代码页 936（GBK）下会产生 C4819/C2143/C2001 等编译错误。
-- 链接依赖：`d3d11.lib;dxgi.lib;d3dcompiler.lib;windowsapp.lib;mfplat.lib;mfreadwrite.lib;mfuuid.lib;ole32.lib;windowscodecs.lib;shell32.lib;comctl32.lib;shlwapi.lib;propsys.lib;winhttp.lib`
+- 链接依赖：`d3d11.lib;dxgi.lib;d3dcompiler.lib;windowsapp.lib;mfplat.lib;mfreadwrite.lib;mfuuid.lib;ole32.lib;windowscodecs.lib;shell32.lib;comctl32.lib;shlwapi.lib;propsys.lib;winhttp.lib;imm32.lib`
   （`propsys.lib` 读设备友好名的 `PropVariant` 接口；`winhttp.lib`
-  供 `core/update.cpp` 做 HTTPS）。
+  供 `core/update.cpp` 做 HTTPS；`imm32.lib` 供框选遮罩解绑 IME）。
 - **改 `winhttp` 相关代码时注意**：`winhttp.h` 只声明 Unicode 版函数，
   名字**没有** `W` 后缀（`WinHttpQueryHeaders` 而非 `WinHttpQueryHeadersW`），
   参数是 `LPCWSTR`。取单个响应头（如 `Location`）用 `WINHTTP_QUERY_LOCATION`
@@ -307,6 +307,17 @@ Visual Studio 装在 **D 盘**，所以 `where msbuild` / `where cl` 一律找�
 
 ## 变更记录（只记功能级变更，小修不记）
 
+- 2026-10-06 豆包输入法致崩的缓解（Debug/Release × Win32/x64 四配置重建通过）：
+  - 现象：游戏中截图时程序消失；`D:\Software\Capture\log\20261006_155853.txt`
+    断在「框选: 遮罩已显示」无后续（日志逐行 flush，可信），另两份旧日志同断点；
+    事件查看器 2 秒后跟 `Application Error`：`tsf-oime-core.dll`（豆包 v0.9.1.22）
+    `0xc0000005@0x1df48`，10/4 起累计十余次同模块同偏移，另两次与框选无关。
+    结论：崩溃方是输入法在窗口取焦点时的 hook，本程序代码不是 faulting 模块。
+  - 缓解：遮罩窗口 `ImmAssociateContext(hwnd, nullptr)` 解绑 IMM，
+    `SnipProc` 吞掉 `WM_IME_*` 五个消息（遮罩永不输入文字）；链接加 `imm32.lib`。
+    仅缓解非根治（崩溃在 TSF 侧），用户侧仍建议更新/切换输入法，见 CHANGELOG。
+  - 否决掉的方案：`ImmDisableTextFrameService` 在本机实测恒返回 FALSE
+   （裸线程/建消息队列后/CoInit 后、`-1` 与真实 TID 均试过），不可用，未进代码。
 - 2026-10-06 更新流程可见性（Release|x64 重建通过）：
   - 下载/校验中新增全页面浮层进度（`DrawUpdateProgressOverlay`）：之前进度只在设置页
     卡片里，而发现弹窗一点就关且无 toast，不在设置页就表现为「点了没反应」；

@@ -10,6 +10,7 @@
 #include "snipping.h"
 #include "core/log.h"
 #include <windowsx.h>
+#include <imm.h>
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -391,6 +392,16 @@ LRESULT CALLBACK SnipProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
         return 0;
 
+    case WM_IME_SETCONTEXT:
+    case WM_IME_NOTIFY:
+    case WM_IME_STARTCOMPOSITION:
+    case WM_IME_COMPOSITION:
+    case WM_IME_ENDCOMPOSITION:
+        // 遮罩永不输入文字：直接吞掉，不建 IME 组字/候选窗口。
+        // 豆包输入法 tsf-oime-core.dll 曾在本机窗口取焦点时崩溃（0xc0000005@0x1df48），
+        // 解绑后可降低其介入概率（缓解，非根治；根治需输入法方修复或用户侧切换输入法）。
+        return 0;
+
     case WM_PAINT:
     {
         PAINTSTRUCT ps{};
@@ -489,6 +500,11 @@ bool RunSnipping(HINSTANCE hinst, const ImageBGRA& frame, SnipSelection& out)
         LOG_ERR(L"框选: 创建遮罩窗口失败(0x%08lX)", GetLastError());
         return false;
     }
+
+    // 遮罩不需要任何文字输入：解绑 IME（IMM），避免第三方输入法在取焦点时介入。
+    // 仅缓解：豆包 tsf-oime-core.dll 的崩溃发生在 TSF 侧，IMM 解绑不能保证掐断；
+    // 线程级 ImmDisableTextFrameService 已实测不可用（本机恒返回 FALSE），故未采用。
+    ImmAssociateContext(hwnd, nullptr);
 
     SnipCtx c;
     c.hwnd   = hwnd;
