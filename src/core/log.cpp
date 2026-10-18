@@ -97,30 +97,42 @@ void LogShutdown()
     if (!g_logFile)
         return;
     LOG_INFO(L"===== 程序退出 =====");
-    fclose(g_logFile);
+    // fclose 必须与 LogWrite 的写入互斥：WGC/音频/保存线程可能仍在打日志，
+    // 若在锁外 fclose，已通过判空的线程会写到已释放的 FILE*（堆损坏）。
+    // 判空 + 置空 + fclose 作为一个原子段
+    EnterCriticalSection(&g_cs);
+    FILE* f = g_logFile;
     g_logFile = nullptr;
+    LeaveCriticalSection(&g_cs);
+    if (f)
+        fclose(f);
 }
 
 void LogWrite(const wchar_t* fmt, ...)
 {
-    if (!g_logFile)
-        return;
-
     wchar_t msg[2048];
     va_list args;
     va_start(args, fmt);
-    vswprintf(msg, 2048, fmt, args);
+    // _vsnwprintf_s + _TRUNCATE：超长截断且保证 NUL 结尾。
+    // 原 vswprintf 走 C99 语义，截断时返回 -1 且缓冲未必 NUL 结尾，
+    // 随后的 %s 输出就是栈越界读（update 的 2KB 响应体 dump 可稳定触发）
+    _vsnwprintf_s(msg, _countof(msg), _TRUNCATE, fmt, args);
     va_end(args);
+    msg[_countof(msg) - 1] = L'\0';
 
     SYSTEMTIME st{};
     GetLocalTime(&st);
 
     EnterCriticalSection(&g_cs);
-    fwprintf(g_logFile,
-             L"[%04u-%02u-%02u %02u:%02u:%02u.%03u][%u] %s\n",
-             st.wYear, st.wMonth, st.wDay,
-             st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
-             GetCurrentThreadId(), msg);
-    fflush(g_logFile);
+    // 判空也在锁内：LogShutdown 可能正在关闭文件
+    if (g_logFile)
+    {
+        fwprintf(g_logFile,
+                 L"[%04u-%02u-%02u %02u:%02u:%02u.%03u][%u] %s\n",
+                 st.wYear, st.wMonth, st.wDay,
+                 st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                 GetCurrentThreadId(), msg);
+        fflush(g_logFile);
+    }
     LeaveCriticalSection(&g_cs);
 }

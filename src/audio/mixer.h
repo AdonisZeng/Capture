@@ -30,7 +30,9 @@ public:
     using DataFn = std::function<void(const BYTE* data, UINT32 bytes, long long ts100ns)>;
 
     // 混好后 PCM 的出口（通常是 Recorder::WriteAudio）；可在运行期随时设置
-    void SetOutput(DataFn fn) { out_ = std::move(fn); }
+    // 线程安全：与 Drain 中的读取/调用共用 mutex_。此前裸赋值，
+    // std::function 的 move-assign 与并发读/调用交叠是 UB（堆损坏）
+    void SetOutput(DataFn fn) { std::lock_guard<std::mutex> lock(mutex_); out_ = std::move(fn); }
     // 参与混音的通道。登记了但迟迟不送数据的通道会被自动降级（见 kStaleMs）
     void SetChannels(bool sys, bool mic);
     // 两路音量系数（1.0 = 原音量），录制开始前设置

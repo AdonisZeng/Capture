@@ -307,6 +307,43 @@ Visual Studio 装在 **D 盘**，所以 `where msbuild` / `where cl` 一律找�
 
 ## 变更记录（只记功能级变更，小修不记）
 
+- 2026-10-18 隐蔽缺陷批量修复（15 项；Debug/Release × Win32/x64 四配置重建通过 +
+  启动冒烟）。背景：低配机上"截完屏后没反应、随后程序退出"暂无法复现，先把
+  审查中能明确确认的问题清掉：
+  - **崩溃级**：`hotkey.cpp` 日志宽窄混用（宽格式串 `%s` + `std::string` → heap
+    越界读，热键注册失败/重复时必走）改 `%hs`；`log.cpp` 的 `vswprintf` 截断不保证
+    NUL 结尾（update 的 2KB dump 可稳定触发栈越界读）改 `_vsnwprintf_s(_TRUNCATE)`，
+    `LogShutdown` 的 `fclose` 挪进临界区、判空同锁（原 check-then-use 会写已释放
+    FILE*）；`page_record` 两处 `TextColored` 把运行时字符串当格式串，改 `"%s"`；
+    `WriteVideoFrame/ConsumeStagedFrame` 补 dev/ctx/ready 空判；两处 `std::thread`
+    构造（更新 worker、保存线程）包 try/catch——原先资源耗尽抛 `std::system_error`
+    直接 terminate。
+  - **MF 生命周期**：`ProbeHardwareEncoderName` 自配 MFStartup/MFShutdown（原先裸调
+    MFTEnumEx：不保证 MF 已启动，且与保存线程 StopLocked 的 MFShutdown 并发），
+    顺带修 count==0 时 acts 不释放。
+  - **录制状态机**：`Recorder::Init` 全程持 `mutex_`（原先只有 StopLocked 在锁内，
+    余下状态裸写与在途写入并发是 UAF/撕裂读）；视频 `WriteSample` 加时间戳单调钳位
+    （照音频侧，防暂停恢复后倒退报 MF_E_INVALIDREQUEST 丢帧）；`AudioMixer::SetOutput`
+    补锁（std::function 并发 move-assign 是 UB）。recorder.h 头注释里"延迟上下文"
+    的过时描述已纠正（与 TDR 红线相悖，防有人改回去）。
+  - **热键**：注册改带 `MOD_NOREPEAT`（原先靠 WM_HOTKEY 的 lParam bit15 过滤长按，
+    那一位恒为 0，从未生效）；左侧导航切页改走 `SetPage`（原先直接改 page_，
+    带着热键捕获态切离设置页后全局热键被 WM_HOTKEY 永久吞掉）。
+  - **更新模块**：`WinHttpQueryHeaders` 长度参数单位改字节（原按字符数低报，
+    Location >1KB 的签名直链被误判"缺少 Location"）；更新助手等旧进程超时后不再
+    强行换文件（原会新旧实例并存/新实例抢不到互斥量秒退）；重定向跳数耗尽补错误文案。
+  - **其他**：`SaveSettings` 检查 ferror/fclose，失败丢弃 .tmp 不覆盖完好配置；
+    UTF-8 按字节截断改 `TruncateUtf8`（util，3 处调用点，不再切出乱码半字符）；
+    `SaveImage` 显式 `ComScope`（util 新增，audio 的同名守卫并入共用——WIC 不再
+    依赖"shell/WinRT 隐式初始化过 COM"这一巧合）；`PickFolderDialog` 补回调使初始
+    目录真正生效（lParam 无 lpfn 时被忽略）；更新下载浮层去掉 `AlwaysAutoResize`
+    （与 ProgressBar(-1) 循环依赖导致宽度逐帧抖动）。
+  - **未做（回归风险大，留专项）**：截图保存/编码异步化与保存期泵消息（UI 线程长
+    耗时是"截完屏没反应"的头号嫌疑，GIF 量化大图在弱 CPU 上可达十几秒）；
+    `GrabLatestFrame` 与 `ConsumeStagedFrame` 的阻塞 Map 仍占 D3D 全局锁（录制路径的
+    "Map 持锁 + 停止时 UI join 音频线程"死锁链只做了外围缓解）；`Drain` 持 mixer 锁
+    回调；混音环形缓冲超 4 秒静默覆写；框选遮罩对非主显示器/窗口来源的底图放置。
+
 - 2026-10-06 豆包输入法致崩的缓解（Debug/Release × Win32/x64 四配置重建通过）：
   - 现象：游戏中截图时程序消失；`D:\Software\Capture\log\20261006_155853.txt`
     断在「框选: 遮罩已显示」无后续（日志逐行 flush，可信），另两份旧日志同断点；

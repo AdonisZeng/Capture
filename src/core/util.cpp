@@ -39,6 +39,32 @@ std::string WideToUtf8Str(const std::wstring& s)
     return WideToUtf8(s.c_str());
 }
 
+std::string TruncateUtf8(const std::string& s, size_t maxBytes)
+{
+    if (s.size() <= maxBytes)
+        return s;
+    // s[maxBytes] 处若是续字节（10xxxxxx），说明把一个字符切成了两半：
+    // 回退到该字符的首字节之前
+    size_t cut = maxBytes;
+    while (cut > 0 && (s[cut] & 0xC0) == 0x80)
+        --cut;
+    return s.substr(0, cut) + "…";
+}
+
+// ---------------------------------------------------------------------------
+// COM
+// ---------------------------------------------------------------------------
+ComScope::ComScope()
+{
+    owned = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
+}
+
+ComScope::~ComScope()
+{
+    if (owned)
+        CoUninitialize();
+}
+
 // ---------------------------------------------------------------------------
 // 系统版本
 // ---------------------------------------------------------------------------

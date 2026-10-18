@@ -7,6 +7,11 @@
 #include <string>
 #include <cwctype>
 
+// 旧 SDK 头里可能没有 MOD_NOREPEAT（Win7+ 的 RegisterHotKey 修饰位 0x4000）
+#ifndef MOD_NOREPEAT
+#define MOD_NOREPEAT 0x4000
+#endif
+
 namespace {
 
 constexpr UINT HOTKEY_MOD_CTRL  = 0x0002;
@@ -172,7 +177,9 @@ bool HotkeyManager::BindOne(HWND hwnd, int id, const std::wstring& text,
     if (Parse(text, mods, vk))
     {
         std::wstring canon = Format(mods, vk);
-        if (RegisterHotKey(hwnd, id, mods, vk) == TRUE)
+        // MOD_NOREPEAT：长按只触发一次。此前靠 WM_HOTKEY 的 lParam bit15 过滤连发，
+        // 但该参数的低 16 位是修饰键掩码、bit15 恒为 0，过滤从未生效过
+        if (RegisterHotKey(hwnd, id, mods | MOD_NOREPEAT, vk) == TRUE)
         {
             out = canon;
             LOG_INFO(L"热键已注册: %ls", canon.c_str());
@@ -202,7 +209,7 @@ bool HotkeyManager::BindOne(HWND hwnd, int id, const std::wstring& text,
         UINT m = 0, v = 0;
         if (!Parse(cand, m, v))
             continue;
-        if (RegisterHotKey(hwnd, id, m, v) == TRUE)
+        if (RegisterHotKey(hwnd, id, m | MOD_NOREPEAT, v) == TRUE)
         {
             out = Format(m, v);
             LOG_INFO(L"热键回退生效: %ls", out.c_str());
@@ -263,7 +270,9 @@ void HotkeyManager::Apply(HWND hwnd, Settings& s)
     LOG_INFO(L"全局热键生效值: 截图=%ls 录制=%ls 显示=%ls",
              s.hotkeyCapture.c_str(), s.hotkeyRecord.c_str(), s.hotkeyShow.c_str());
     if (!errors.empty())
-        LOG_WARN(L"热键部分未生效: %s", errors.c_str());
+        // %hs = 窄串。宽字符格式串里 %s 对应 wchar_t*，传 std::string::c_str()
+        // 会被当 UTF-16 读过缓冲末尾（heap 越界读，运气差直接崩）
+        LOG_WARN(L"热键部分未生效: %hs", errors.c_str());
 }
 
 void HotkeyManager::Unregister()

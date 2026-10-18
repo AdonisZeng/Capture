@@ -250,24 +250,36 @@ bool Recorder::ScaleToOutput(ID3D11DeviceContext* imm, ID3D11Texture2D* src)
 std::wstring ProbeHardwareEncoderName()
 {
     std::wstring name;
+    // MFTEnumEx 属于 MF，调用前必须保证 MF 已启动：本函数被 UI 线程（录屏页首次
+    // 绘制）调用，不保证 Recorder::Init 的 MFStartup 已跑过；且保存线程 StopLocked 里的
+    // MFShutdown 可能并发收尾。这里自配一对 MFStartup/MFShutdown（MF 计数配对，
+    // 期间 MF 不会被别人的 Shutdown 关掉），两头都堵上
+    HRESULT hrInit = MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET);
+    if (FAILED(hrInit))
+        return name;
+
     IMFActivate** acts = nullptr;
     UINT32 count = 0;
     // MFTEnumEx 共 6 参数（第 4 参为输出类型过滤）
     if (SUCCEEDED(MFTEnumEx(MFT_CATEGORY_VIDEO_ENCODER,
                             MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER,
-                            nullptr, nullptr, &acts, &count)) && count > 0)
+                            nullptr, nullptr, &acts, &count)) && acts)
     {
-        WCHAR* str = nullptr;
-        UINT32 len = 0;
-        if (SUCCEEDED(acts[0]->GetAllocatedString(MFT_FRIENDLY_NAME_Attribute, &str, &len)))
+        if (count > 0)
         {
-            name = str;
-            CoTaskMemFree(str);
+            WCHAR* str = nullptr;
+            UINT32 len = 0;
+            if (SUCCEEDED(acts[0]->GetAllocatedString(MFT_FRIENDLY_NAME_Attribute, &str, &len)))
+            {
+                name = str;
+                CoTaskMemFree(str);
+            }
+            for (UINT32 i = 0; i < count; ++i)
+                acts[i]->Release();
         }
-        for (UINT32 i = 0; i < count; ++i)
-            acts[i]->Release();
         CoTaskMemFree(acts);
     }
+    MFShutdown();
     return name;
 }
 
@@ -277,10 +289,12 @@ bool Recorder::Init(ID3D11Device* device, const wchar_t* path,
                     bool hwEncode, int audioBitrateKbps, std::wstring& err,
                     const RECT* crop)
 {
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        StopLocked();
-    }
+    // 全程持锁：Init 会重置大量与 WriteVideoFrame/WriteAudio 共享的状态
+    // （staging 纹理、srcW_/outW_、writer_ 等），此前只有 StopLocked 在锁内，
+    // 其余裸写与滞留的在途写入并发即 UAF / 撕裂读。此时没有合法的写入方，
+    // 持锁做 MFStartup/SinkWriter 创建不会有副作用（不产生锁序反转：本函数不回调）
+    std::lock_guard<std::mutex> lock(mutex_);
+    StopLocked();
     err.clear();
     // 重置本次录制的状态与统计
     stagingTex_[0].Reset();
@@ -303,6 +317,8 @@ bool Recorder::Init(ID3D11Device* device, const wchar_t* path,
     videoFrames_ = audioBlocks_ = 0;
     lastAudioTs_ = 0;
     audioHasData_ = false;
+    lastVideoTs_ = 0;
+    videoHasTs_ = false;
     videoErrCount_ = audioErrCount_ = 0;
     videoErrTotal_ = audioErrTotal_ = 0;
     videoFirstLogged_ = audioFirstLogged_ = false;
@@ -593,7 +609,11 @@ void Recorder::WriteVideoFrame(ID3D11Texture2D* tex, long long ts100ns)
     Microsoft::WRL::ComPtr<ID3D11Device> dev;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> ctx;
     tex->GetDevice(dev.GetAddressOf());
+    if (!dev)
+        return;
     dev->GetImmediateContext(ctx.GetAddressOf());
+    if (!ctx)
+        return;
 
     // 需要缩放时先把源帧画进目标尺寸纹理，后续取像素都以该纹理为准
     ID3D11Texture2D* workTex = tex;
@@ -671,6 +691,12 @@ void Recorder::WriteVideoFrame(ID3D11Texture2D* tex, long long ts100ns)
 bool Recorder::ConsumeStagedFrame(ID3D11DeviceContext* ctx, UINT copyW, UINT copyH)
 {
     ID3D11Texture2D* ready = stagingTex_[stageNext_ ^ 1].Get();
+    if (!ready)
+    {
+        // 不变量被打破（设备恢复/异常时序清过暂存）：放弃本帧而不是空指针 Map
+        stageHasPending_ = false;
+        return true;
+    }
 
     const UINT dstStride = outW_ * 4;
     const SIZE_T bufLen = (SIZE_T)dstStride * outH_;
@@ -740,7 +766,15 @@ bool Recorder::ConsumeStagedFrame(ID3D11DeviceContext* ctx, UINT copyW, UINT cop
         return true;
     }
     sample->AddBuffer(buffer.Get());
-    sample->SetSampleTime(stagedTs_);
+    // 时间戳单调化（与音频侧同一策略）：暂停恢复会前移 baseTime，而恢复瞬间处理的
+    // 那帧可能采集于测量时刻之前，时间戳会比上一帧小；MF 要求样本时间严格递增，
+    // 倒退会报 MF_E_INVALIDREQUEST 丢帧
+    long long ts = stagedTs_;
+    if (videoHasTs_ && ts <= lastVideoTs_)
+        ts = lastVideoTs_ + 1;   // 1 单位 = 0.1 微秒，听/看不出来
+    lastVideoTs_ = ts;
+    videoHasTs_ = true;
+    sample->SetSampleTime(ts);
     sample->SetSampleDuration(duration100ns_);
     hr = writer_->WriteSample(videoStream_, sample.Get());
     stageHasPending_ = false;   // 已消费（送出或放弃）
@@ -752,7 +786,7 @@ bool Recorder::ConsumeStagedFrame(ID3D11DeviceContext* ctx, UINT copyW, UINT cop
         {
             ++videoErrCount_;
             LOG_ERR(L"视频帧写入失败: WriteSample (hr=0x%08lX%s), 输出=%ux%u, 有效=%ux%u, 缓冲=%zu 字节, 行距=%u, ts=%lld",
-                    hr, HrSuffix(hr).c_str(), outW_, outH_, copyW, copyH, bufLen, mr.RowPitch, stagedTs_);
+                    hr, HrSuffix(hr).c_str(), outW_, outH_, copyW, copyH, bufLen, mr.RowPitch, ts);
         }
         return false;
     }
@@ -761,7 +795,7 @@ bool Recorder::ConsumeStagedFrame(ID3D11DeviceContext* ctx, UINT copyW, UINT cop
     {
         videoFirstLogged_ = true;
         LOG_INFO(L"视频首帧已写入 (输出=%ux%u, 有效=%ux%u, 行距=%u, 缓冲=%zu, ts=%lld)",
-                 outW_, outH_, copyW, copyH, mr.RowPitch, bufLen, stagedTs_);
+                 outW_, outH_, copyW, copyH, mr.RowPitch, bufLen, ts);
     }
     return true;
 }

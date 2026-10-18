@@ -650,10 +650,21 @@ static void StopRecordingPhase2()    // 帧末执行：首帧起线程 Finalize�
         g_saveLaunched = true;
         g_saveDone.store(false);
         // Finalize（编码器 flush）可能阻塞数秒，扔后台线程，主循环继续转圈
-        g_saveThread = std::thread([]() {
+        try
+        {
+            g_saveThread = std::thread([]() {
+                g_rec.Stop();
+                g_saveDone.store(true);
+            });
+        }
+        catch (...)
+        {
+            // std::thread 构造失败（资源耗尽）会抛 std::system_error，不接住就整个
+            // 进程 terminate。退回同步收尾：这里最多多冻几秒，下一轮主循环照常结算
+            LOG_ERR(L"保存线程创建失败, 退回同步保存");
             g_rec.Stop();
             g_saveDone.store(true);
-        });
+        }
         return;
     }
     if (!g_saveDone.load())
@@ -934,9 +945,8 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         // （捕获行只管录入文本，真正的注册走「自动应用」流程）
         if (g_ui.IsCapturingHotkey())
             return 0;
-        // lParam 最高位为 1 表示热键被按住不放，忽略以避免长按连发
-        if (lParam & 0x8000)
-            return 0;
+        // 长按连发已在注册侧用 MOD_NOREPEAT 屏蔽（原先这里判 lParam bit15 想过滤
+        // 连发，但 WM_HOTKEY 的 lParam 低 16 位是修饰键掩码、bit15 恒为 0，从未生效）
         switch ((UINT)wParam)
         {
         case HK_CAPTURE_ID:

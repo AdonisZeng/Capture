@@ -45,19 +45,9 @@ static bool IsPcm16Format(const WAVEFORMATEX* wfx)
     return false;
 }
 
-// COM 初始化守卫：枚举函数可能从 UI 线程调用，那里没有初始化过 COM
-namespace {
-struct ComScope
-{
-    bool owned = false;
-    ComScope()
-    {
-        // RPC_E_CHANGED_MODE 表示线程已是单线程模式（UI 主线程即如此），照样能用
-        owned = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
-    }
-    ~ComScope() { if (owned) CoUninitialize(); }
-};
-}   // namespace
+// COM 初始化守卫（core/util.h 的 ComScope）：枚举/打开设备可能从 UI 线程调用，
+// 那里不保证初始化过 COM。ComScope 会按线程状态决定是否接管并自动配对，
+// 不再依赖「谁在哪开了 COM」的隐含约定
 
 // 设备友好名：读 PKEY_Device_FriendlyName（SDK 里没有 WaveGetProductName 可用）
 static std::wstring DeviceFriendlyName(IMMDevice* dev)

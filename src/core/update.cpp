@@ -189,10 +189,20 @@ bool SpawnWorker(void (*fn)())
         g_worker.join();   // 已结束，立即返回
     g_workerAlive.store(true);
     g_cancel.store(false); // 上一轮遗留的中止标志不能毒化本轮
-    g_worker = std::thread([fn]() {
-        fn();
+    try
+    {
+        g_worker = std::thread([fn]() {
+            fn();
+            g_workerAlive.store(false);
+        });
+    }
+    catch (...)
+    {
+        // std::thread 构造失败（线程数/内存耗尽）会抛 std::system_error，
+        // 不接住就 std::terminate；回滚存活标志让下一次还能重试
         g_workerAlive.store(false);
-    });
+        return false;
+    }
     return true;
 }
 
@@ -622,7 +632,9 @@ FetchResult HttpGet(const std::string& url, const char* acceptHeader,
         if (status >= 300 && status < 400)
         {
             wchar_t loc[2048] = {};
-            DWORD locLen = (DWORD)(sizeof(loc) / sizeof(wchar_t) - 1);
+            // lpdwBufferLength 单位是【字节】（winhttp.h: _Out_writes_bytes_to_）。
+            // 原先按字符数报 2047，长签名 Location（>1KB）会被误判成「缺少 Location」
+            DWORD locLen = (DWORD)sizeof(loc);
             std::string next;
             // 按名字取单个响应头：枚举里就有 WINHTTP_QUERY_LOCATION（值 33），
             // 比 WINHTTP_QUERY_CUSTOM 稳；用 0 会一直取不到从而误判成「缺少 Location」
@@ -770,6 +782,11 @@ FetchResult HttpGet(const std::string& url, const char* acceptHeader,
             res.ok = true;
         break;
     }
+
+    // 跳数耗尽时（每轮都是重定向 continue 走完循环）ok=false 且 err 为空，
+    // 上层会显示「检查/更新失败：」后面没原因
+    if (!res.ok && res.err.empty() && !res.cancelled)
+        res.err = "重定向次数过多";
 
     WinHttpCloseHandle(hSession);
     return res;
@@ -1376,8 +1393,17 @@ bool Update::RunApplyHelper()
         HANDLE hOld = OpenProcess(SYNCHRONIZE, FALSE, oldPid);
         if (hOld)
         {
-            WaitForSingleObject(hOld, 60000);
+            // 超时必须中止：旧进程（如正在 Finalize 保存）还活着就换文件，
+            // 会出现新旧实例并存 / 新实例抢不到互斥量秒退（"程序自己关掉不再出现"）
+            const DWORD wr = WaitForSingleObject(hOld, 60000);
             CloseHandle(hOld);
+            if (wr != WAIT_OBJECT_0)
+            {
+                ApplyFail(L"更新失败：等待旧版本退出超时，已中止替换。\n"
+                          L"请等 Capture 完全退出后重新检查更新。");
+                LogShutdown();
+                return true;
+            }
         }
         else
         {

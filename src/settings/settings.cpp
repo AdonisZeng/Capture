@@ -416,7 +416,16 @@ bool SaveSettings(const Settings& s)
     fprintf(f, "  \"updateLastCheck\": %lld,\n", s.updateLastCheck);
     fprintf(f, "  \"updateSkipTag\": \"%s\"\n", JsonEscape(s.updateSkipTag).c_str());
     fprintf(f, "}\n");
-    fclose(f);
+    // 磁盘满/写入出错时不能拿残缺的 .tmp 去替换完好的 settings.json：
+    // 检查每个写入阶段的错误位与 fclose 返回值，失败就丢弃临时文件
+    const bool writeOk = (ferror(f) == 0);
+    const bool closeOk = (fclose(f) == 0);
+    if (!writeOk || !closeOk)
+    {
+        LOG_ERR(L"配置文件写入未完成(磁盘满?): %s", tmp.c_str());
+        DeleteFileW(tmp.c_str());
+        return false;
+    }
 
     if (!MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING))
     {

@@ -209,8 +209,7 @@ void DrawCapturePage(const UiContext& ctx)
             std::string name = WideToUtf8Str(p);
             const size_t pos = name.find_last_of("\\/");
             std::string base = (pos == std::string::npos) ? name : name.substr(pos + 1);
-            if (base.size() > 40)
-                base = base.substr(0, 40) + "…";
+            base = TruncateUtf8(base, 40);
             char rid[32] = {};
             snprintf(rid, sizeof(rid), "recent_shot_%d", shown);
             if (SecondaryButton(rid, base.c_str(),

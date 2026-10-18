@@ -26,6 +26,22 @@ inline bool IsDeviceLostHr(HRESULT hr)
 std::string  WideToUtf8(const wchar_t* s);
 std::wstring Utf8ToWide(const char* s);
 std::string  WideToUtf8Str(const std::wstring& s);
+// 按字节上限截断 UTF-8 并在末尾加省略号：绝不在多字节序列中间切断
+// （substr 按字节切汉字会残留半个字符，界面显示为乱码方块）
+std::string  TruncateUtf8(const std::string& s, size_t maxBytes);
+
+// ---- COM ----
+// COM 套间作用域守卫：函数内做一次性 COM 调用（WIC / WASAPI 等）前构造，
+// 保证当前线程已初始化 COM。线程未初始化时接管（析构配对 CoUninitialize）；
+// 已初始化的线程不接管：CoInitializeEx 返回 S_FALSE（已加计数，故仍要配对减），
+// 或 RPC_E_CHANGED_MODE（线程已是 STA，如 UI 主线程被 shell/WinRT 初始化过），
+// 后者照样能用 COM，由原初始化方负责收尾
+struct ComScope
+{
+    bool owned = false;
+    ComScope();
+    ~ComScope();
+};
 
 // ---- 目录 ----
 // 可执行文件所在目录（不带尾部分隔符；路径超长时按需扩缓冲，不会被 MAX_PATH 截断）

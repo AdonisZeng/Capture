@@ -41,6 +41,15 @@ void CopyToBuf(char* dst, size_t cap, const std::wstring& s)
 // ---------------------------------------------------------------------------
 // 目录选择对话框
 // ---------------------------------------------------------------------------
+// SHBrowseForFolder 的"初始目录"只能经回调设置：BROWSEINFOW::lParam 只透传给
+// lpfn，没有回调时它会被忽略（此前初始目录从未生效，每次都是桌面）
+static int CALLBACK BrowseDirCallback(HWND hwnd, UINT uMsg, LPARAM, LPARAM lpData)
+{
+    if (uMsg == BFFM_INITIALIZED && lpData)
+        SendMessageW(hwnd, BFFM_SETSELECTIONW, TRUE, lpData);
+    return 0;
+}
+
 bool PickFolderDialog(HWND owner, std::wstring& dir)
 {
     std::wstring init = dir.empty() ? DesktopDir() : dir;
@@ -49,6 +58,7 @@ bool PickFolderDialog(HWND owner, std::wstring& dir)
     bi.hwndOwner = owner;
     bi.lpszTitle = L"选择输出目录";
     bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_EDITBOX;
+    bi.lpfn = BrowseDirCallback;
     bi.lParam = (LPARAM)init.c_str();
 
     PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
@@ -352,10 +362,13 @@ void DrawUpdateProgressOverlay()
         return;
     const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    // 宽度固定 380、高度（0 值轴）自动适配内容。不要开 AlwaysAutoResize：
+    // 那会把宽度也交给内容决定，而 ProgressBar(-1) 又要"填满窗口宽"，
+    // 两者互相依赖，宽度会逐帧抖动
     ImGui::SetNextWindowSize(ImVec2(380.0f, 0.0f), ImGuiCond_Appearing);
     if (!ImGui::Begin("正在更新", nullptr,
                       ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
-                      ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+                      ImGuiWindowFlags_NoSavedSettings |
                       ImGuiWindowFlags_NoFocusOnAppearing))
     {
         ImGui::End();
@@ -872,11 +885,9 @@ void UiApp::DrawNav(float height)
                     kNavWidth - Space::Sm * 2.0f, Control::NavItem))
         {
             if (page_ != i)
-            {
-                page_ = i;
-                if (cfg_)
-                    cfg_->lastPage = i;
-            }
+                // 走 SetPage：它会一并作废未完成的热键捕获。此前直接改 page_，
+                // 带着捕获态切离设置页后轮询不再执行，全局热键会被 WM_HOTKEY 永久吞掉
+                SetPage(i);
         }
         y += Control::NavItem + Control::NavGap;
     }

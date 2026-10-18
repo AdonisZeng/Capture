@@ -287,13 +287,15 @@ void DrawRecordPage(const UiContext& ctx)
         {
             snprintf(pvInfo, sizeof(pvInfo), "已暂停   %s   %ux%u",
                      FormatElapsed(sec).c_str(), st.previewW, st.previewH);
-            ImGui::TextColored(Pal::Warning(), pvInfo);
+            // 必须走 "%s"：TextColored 是 printf 语义，直接把运行时字符串当格式串
+            // 传入，一旦内容里出现 % 就会按格式串解析不存在的变参（垃圾指针/崩溃）
+            ImGui::TextColored(Pal::Warning(), "%s", pvInfo);
         }
         else
         {
             snprintf(pvInfo, sizeof(pvInfo), "● REC   %s   %ux%u @ %d fps",
                      FormatElapsed(sec).c_str(), st.previewW, st.previewH, cfg.fps);
-            ImGui::TextColored(Pal::Danger(), pvInfo);
+            ImGui::TextColored(Pal::Danger(), "%s", pvInfo);
         }
     }
     else
@@ -360,8 +362,7 @@ void DrawRecordPage(const UiContext& ctx)
             std::string cur = st.capWindowTitle.empty()
                 ? std::string("尚未选择")
                 : WideToUtf8Str(st.capWindowTitle);
-            if (cur.size() > 42)
-                cur = cur.substr(0, 42) + "…";
+            cur = TruncateUtf8(cur, 42);
             FieldLabel("窗口", labelW);
             ImGui::TextUnformatted(cur.c_str());
             ImGui::SameLine();
@@ -663,8 +664,7 @@ void DrawRecordPage(const UiContext& ctx)
             std::string name = WideToUtf8Str(p);
             const size_t pos = name.find_last_of("\\/");
             std::string base = (pos == std::string::npos) ? name : name.substr(pos + 1);
-            if (base.size() > 40)
-                base = base.substr(0, 40) + "…";
+            base = TruncateUtf8(base, 40);
             char rid[32] = {};
             snprintf(rid, sizeof(rid), "recent_rec_%d", shown);
             if (SecondaryButton(rid, base.c_str(),

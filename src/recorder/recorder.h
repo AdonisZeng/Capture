@@ -31,7 +31,8 @@ public:
 
     // 创建 MP4 文件并开始写入。
     // srcW/srcH = 捕获源尺寸；outW/outH = 期望编码尺寸（宽高内部向下取偶）。
-    // 目标尺寸小于源尺寸时启用 GPU 缩放（延迟上下文 + 全屏三角形线性采样）；
+    // 目标尺寸小于源尺寸时启用 GPU 缩放（立即上下文 + 全屏三角形线性采样；
+    // 严禁延迟上下文，见文件头的 TDR 教训）；
     // 缩放不可用会自动退回源尺寸录制。
     // crop = 区域录制的源像素矩形（相对捕获帧左上角，右/下不含）：
     //   非空时 outW/outH 被忽略，按裁剪区原分辨率录制（向下取偶），不做 GPU 缩放。
@@ -121,4 +122,6 @@ private:
     long long videoFrames_ = 0, audioBlocks_ = 0;  // 成功写入计数
     long long lastAudioTs_ = 0;   // 已写入音频的最大时间戳（单调化用，防静音保活与真实包竞态倒退）
     bool audioHasData_ = false;
+    long long lastVideoTs_ = 0;   // 已写入视频的最大时间戳（单调化用，防暂停恢复后时间戳倒退）
+    bool videoHasTs_ = false;
 };

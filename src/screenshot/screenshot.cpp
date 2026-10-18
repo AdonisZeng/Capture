@@ -176,6 +176,11 @@ bool SaveImage(const std::wstring& path, const ImageBGRA& img, int format)
     if (!img.Valid())
         return false;
 
+    // WIC 是 COM 组件：显式保证本线程已初始化 COM，不依赖「shell/WinRT 先替我们
+    // 初始化过」这一巧合（换调用顺序/精简启动路径后 CoCreateInstance 会返回
+    // CO_E_NOTINITIALIZED，表现为所有格式都存盘失败）
+    ComScope com;
+
     const FormatInfo& fmt = Fmt(format);
 
     std::wstring dir, file;
