@@ -274,7 +274,7 @@ static void DoShot()
     }
 
     SnipSelection sel;
-    bool ok = RunSnipping(GetModuleHandleW(nullptr), img, sel);
+    bool ok = RunSnipping(GetModuleHandleW(nullptr), img, sel, true);
     RestoreWindowAfterShot();
     if (!ok)
     {
@@ -392,7 +392,7 @@ static bool PickRecordRegion()
         return false;
     }
     SnipSelection sel;
-    const bool ok = RunSnipping(GetModuleHandleW(nullptr), img, sel);
+    const bool ok = RunSnipping(GetModuleHandleW(nullptr), img, sel, false);
     RestoreWindowAfterRegion();
     if (!ok)
     {

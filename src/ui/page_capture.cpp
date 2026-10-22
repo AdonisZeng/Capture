@@ -69,7 +69,7 @@ void DrawCapturePage(const UiContext& ctx)
     float availW = ImGui::GetContentRegionAvail().x;
     const float btnH = Control::ButtonLg;
 
-    // 单一入口：点击后进入全屏框选，拖拽出区域就截区域，直接单击则截整屏
+    // 单一入口：点击后进入全屏框选，移动高亮窗口，单击截窗口，拖拽则截选区
     char hkText[48] = {};
     strncpy_s(hkText, WideToUtf8Str(ctx.hotkeyCapture).c_str(), _TRUNCATE);
     if (PrimaryButton("shot", "截屏", ImVec2(availW, btnH), Pal::Accent(), hkText, hasFrame))
@@ -77,7 +77,7 @@ void DrawCapturePage(const UiContext& ctx)
 
     // 说明行行数恒定：要么讲用法，要么解释按钮为何不可用
     if (hasFrame)
-        HintText("点击后进入全屏框选：按住左键拖出区域；直接单击则截取整个屏幕");
+        HintText("单击截取高亮窗口，Ctrl+单击截整屏；按住左键拖拽则截取选区");
     else
         HintTextColored("尚未捕获到画面，无法截图，请等预览出现后再试", Pal::Warning());
 

@@ -33,7 +33,7 @@ Windows 桌面录屏应用：捕获主显示器画面 + 可选的系统声音/�
 | `src/graphics/graphics.h/.cpp` | D3D11 设备 + 交换链封装（Init/Resize/BeginFrame/Present） |
 | `src/capture/capture.h/.cpp` | `ScreenCapture`：WGC 捕获封装（`StartForMonitor`/`StartForWindow` + 内部共用的 `StartWithItem`），工作线程回调输出最新帧 BGRA 纹理 + 100ns 时间戳；`EnumerateMonitors/FindMonitor/EnumerateWindows` 供画面来源选择器使用 |
 | `src/screenshot/screenshot.h/.cpp` | `GrabLatestFrame`（纹理→CPU BGRA）/ `CropImage`（按像素矩形裁剪）/ `SaveImage`（WIC，PNG·JPEG·BMP·TIFF·GIF）/ 格式表（`ShotFormatExt`·`ShotFormatLabel`·`StripImageExtension`）/ `CopyToClipboard`（CF_DIB） |
-| `src/screenshot/snipping.h/.cpp` | `RunSnipping`：全屏置顶分层窗口遮罩，冻结帧上拖拽框选；单击=整屏，Esc/右键取消 |
+| `src/screenshot/snipping.h/.cpp` | `RunSnipping`：全屏置顶分层窗口遮罩，冻结帧上拖拽框选；可选的窗口识别（悬停高亮 + 单击截窗口），Esc/右键取消 |
 | `src/recorder/recorder.h/.cpp` | `Recorder`：MF SinkWriter 封装，码率/硬件加速/音频码率可配；视频走系统内存路径，GPU 回读为立即上下文拷贝 + 双暂存错帧阻塞 Map；`WriteVideoFrame`/`WriteAudio`/`Stop`（Finalize 可能阻塞数秒）/`ReleaseDeviceResources` |
 | `src/audio/audio.h/.cpp` | `AudioCapture`：WASAPI 采集封装（`AudioRole::System` 走 eRender+LOOPBACK，`AudioRole::Mic` 走 eCapture），`Open`/`Start`/`Stop` 三段式，设备 ID 可指定（空 = 默认），输出恒为 48kHz/双声道/16bit（float、单声道源自动转换）；`EnumerateAudioDevices` 供设备选择器使用 |
 | `src/audio/mixer.h/.cpp` | `AudioMixer`：系统声音 + 麦克风双路按时间戳对齐后相加（各路增益 + 硬限幅），窗口内缺失数据填静音；两路都开时才用，单路直接透传 |
@@ -66,9 +66,10 @@ Windows 桌面录屏应用：捕获主显示器画面 + 可选的系统声音/�
 
 - **源文件必须保存为 UTF-8 编码；MSVC 编译必须带 `/utf-8`**（已在 vcxproj 四个配置中配置）。
   历史教训：UTF-8 无 BOM 的中文源文件在默认代码页 936（GBK）下会产生 C4819/C2143/C2001 等编译错误。
-- 链接依赖：`d3d11.lib;dxgi.lib;d3dcompiler.lib;windowsapp.lib;mfplat.lib;mfreadwrite.lib;mfuuid.lib;ole32.lib;windowscodecs.lib;shell32.lib;comctl32.lib;shlwapi.lib;propsys.lib;winhttp.lib;imm32.lib`
+- 链接依赖：`d3d11.lib;dxgi.lib;d3dcompiler.lib;windowsapp.lib;mfplat.lib;mfreadwrite.lib;mfuuid.lib;ole32.lib;windowscodecs.lib;shell32.lib;comctl32.lib;shlwapi.lib;propsys.lib;winhttp.lib;imm32.lib;dwmapi.lib`
   （`propsys.lib` 读设备友好名的 `PropVariant` 接口；`winhttp.lib`
-  供 `core/update.cpp` 做 HTTPS；`imm32.lib` 供框选遮罩解绑 IME）。
+  供 `core/update.cpp` 做 HTTPS；`imm32.lib` 供框选遮罩解绑 IME；
+  `dwmapi.lib` 供框选遮罩读 `DWMWA_EXTENDED_FRAME_BOUNDS`/`DWMWA_CLOAKED`）。
 - **改 `winhttp` 相关代码时注意**：`winhttp.h` 只声明 Unicode 版函数，
   名字**没有** `W` 后缀（`WinHttpQueryHeaders` 而非 `WinHttpQueryHeadersW`），
   参数是 `LPCWSTR`。取单个响应头（如 `Location`）用 `WINHTTP_QUERY_LOCATION`
@@ -302,10 +303,40 @@ Visual Studio 装在 **D 盘**，所以 `where msbuild` / `where cl` 一律找�
   底图为冻结帧；`UpdateLayeredWindow(ULW_OPAQUE)` 推画面，故无需关心 GDI 写出的 alpha 字节。
 - 渲染分三层 DIB：帧原图（只填一次）→ 压暗图（初始化时逐通道乘 0.42）→ 合成图
   （每次重绘只在压暗底上还原选区，鼠标移动时无逐像素运算）。
-- 交互：按下左键拖动出矩形→区域截图；位移 ≤6px 视为单击→整屏；Esc / 右键取消。
+- 交互（`windowPick=true`，截屏）：鼠标移动时用 `EnumWindows` 按 Z 序取光标下最上层顶层窗口
+  （跳过本进程窗口、不可见/最小化、`WS_EX_TRANSPARENT`、DWM cloaked、桌面 `Progman`/`WorkerW`），
+  可见边界取 `DWMWA_EXTENDED_FRAME_BOUNDS`（`GetWindowRect` 含约 7px 透明阴影外扩），
+  在高亮窗口上单击（位移 ≤6px）即截该窗口；Ctrl+单击始终截整屏，桌面空白处单击也截整屏；
+  按住左键拖动超过阈值即隐藏高亮、转为普通区域框选（锚点仍是最初按下的位置）。
+  松开时的最终位移仍 ≤6px 一律按单击处理（拖出去又拖回来不会退化成窄条）。
+  `windowPick=false`（区域录制）保持原行为：单击=整屏、拖拽=选区。Esc / 右键取消。
   遮罩的消息循环只分发遮罩窗口自身的消息，避免热键/托盘消息重入（WM_QUIT 必须放行）。
 
 ## 变更记录（只记功能级变更，小修不记）
+
+- 2026-10-22 区域截图支持窗口识别（Debug/Release × Win32/x64 四配置重建通过）：
+  - 遮罩打开即识别光标下窗口并高亮（还原亮度 + 边框 + 「窗口 W × H」标签），
+    鼠标移动实时切换目标；单击（位移 ≤6px）直接截取高亮窗口，桌面空白处单击仍截整屏。
+  - `Ctrl+单击`始终截整屏（按下瞬间按住 Ctrl 即生效），给「屏幕被最大化窗口铺满、
+    没有桌面空白可点」的情况保留整屏入口；遮罩与截屏页提示均已写明。
+  - 按住左键拖动超过阈值即切换为普通区域框选（高亮消失，锚点仍是最初按下位置），
+    之后划多大区域就截多大；Esc / 右键 / 回车等原有交互不变。
+  - 单击判定只看松开时的最终位移：曾经拖出去又拖回来仍按单击处理，
+    不再因 `movedBeyondSlop` 已置位而退化成 1~2px 窄条（截屏与区域录制两条路径都修）。
+  - `RunSnipping` 新增 `windowPick` 参数：截屏传 `true`；区域录制传 `false`，
+    单击=整屏的旧行为不受影响。
+  - 窗口识别：`EnumWindows` 按 Z 序取首个命中点，跳过本进程窗口、不可见/最小化、
+    `WS_EX_TRANSPARENT`、`SetLayeredWindowAttributes` 设过 `LWA_ALPHA` 且 alpha=0
+    的分层窗口、DWM cloaked、桌面 `Progman`/`WorkerW`（逐像素 alpha 的
+    `UpdateLayeredWindow` 窗口查不到 alpha，不在跳过范围内）；
+    可见边界用 `DWMWA_EXTENDED_FRAME_BOUNDS`（避免 `GetWindowRect` 带出的透明阴影边），
+    失败回退 `GetWindowRect`；窗口跨屏时夹到主显示器（有底图）范围。
+  - 悬停识别命中后缓存窗口句柄：鼠标仍在该窗口 `GetWindowRect` 内时不再全量枚举，
+    但每次命中缓存都要沿 `GW_HWNDPREV` 向上回溯更高层窗口（否则小窗口盖在大窗口上、
+    鼠标移回小窗口区域时会一直停留在大的那个）；鼠标按下时清空缓存强制重查 Z 序。
+  - `UpdateHover` 只更新状态并返回是否变化，由调用方决定是否 `Compose`，
+    消除鼠标按下时的一次全屏重复合成（多屏 4K 下即数十 MB 的无谓上传）。
+  - 新增 `dwmapi.lib` 链接依赖。
 
 - 2026-10-18 隐蔽缺陷批量修复（15 项；Debug/Release × Win32/x64 四配置重建通过 +
   启动冒烟）。背景：低配机上"截完屏后没反应、随后程序退出"暂无法复现，先把

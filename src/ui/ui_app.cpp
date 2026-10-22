@@ -703,7 +703,7 @@ void DrawSettingsPage(const UiContext& ctx)
         char* buf;
     };
     const Row rows[kHotkeyCount] = {
-        { "区域截图", "全屏遮罩上拖拽选择区域", ctx.hotkeyCapture.c_str(), g_hkEdit[0] },
+        { "区域截图", "移动选窗口 / 拖拽选区域", ctx.hotkeyCapture.c_str(), g_hkEdit[0] },
         { "开始 / 停止录制", "再次按下则结束当前录制", ctx.hotkeyRecord.c_str(),  g_hkEdit[1] },
         { "显示主窗口", "从托盘恢复窗口",           ctx.hotkeyShow.c_str(),    g_hkEdit[2] },
     };
