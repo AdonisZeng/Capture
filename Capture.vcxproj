@@ -215,6 +215,8 @@
     <ClInclude Include="src\core\resource.h" />
     <ClInclude Include="src\core\version.h" />
     <ClInclude Include="src\core\update.h" />
+    <ClInclude Include="src\core\share.h" />
+    <ClInclude Include="src\ocr\ocr.h" />
     <ClInclude Include="src\app_state.h" />
     <ClInclude Include="src\settings\settings.h" />
     <ClInclude Include="src\screenshot\screenshot.h" />
@@ -223,6 +225,7 @@
     <ClInclude Include="src\ui\ui_theme.h" />
     <ClInclude Include="src\ui\ui_widgets.h" />
     <ClInclude Include="src\ui\page_capture.h" />
+    <ClInclude Include="src\ui\ocr_window.h" />
     <ClInclude Include="src\ui\page_record.h" />
     <ClInclude Include="imgui\imgui_internal.h" />
     <ClInclude Include="imgui\imstb_rectpack.h" />
@@ -247,6 +250,8 @@
     <ClCompile Include="src\core\autostart.cpp" />
     <ClCompile Include="src\core\appicon.cpp" />
     <ClCompile Include="src\core\update.cpp" />
+    <ClCompile Include="src\core\share.cpp" />
+    <ClCompile Include="src\ocr\ocr.cpp" />
     <ClCompile Include="src\settings\settings.cpp" />
     <ClCompile Include="src\screenshot\screenshot.cpp" />
     <ClCompile Include="src\screenshot\snipping.cpp" />
@@ -254,6 +259,7 @@
     <ClCompile Include="src\ui\ui_theme.cpp" />
     <ClCompile Include="src\ui\ui_widgets.cpp" />
     <ClCompile Include="src\ui\page_capture.cpp" />
+    <ClCompile Include="src\ui\ocr_window.cpp" />
     <ClCompile Include="src\ui\page_record.cpp" />
     <ClCompile Include="imgui\imgui_tables.cpp" />
     <ClCompile Include="imgui\imgui_widgets.cpp" />

@@ -31,6 +31,9 @@
 #include "core/trayicon.h"
 #include "core/appicon.h"
 #include "core/update.h"
+#include "core/share.h"
+#include "ocr/ocr.h"
+#include "ui/ocr_window.h"
 #include "ui/ui_app.h"
 #include "ui/ui_theme.h"
 
@@ -237,13 +240,18 @@ static void RestoreWindowAfterShot()
 // 发起一次截图：先隐藏主窗口，等新帧到达后再进框选（见主循环的 WaitFrame）
 static void BeginShot()
 {
-    if (!g_cfg.shotSaveFile && !g_cfg.shotCopyClip)
+    // 快捷操作栏开着时，即使自动存盘/复制都关，工具栏里的复制/识别/分享仍能产出结果，
+    // 故不再拦截；只有旧流程（工具栏关闭）才需要至少一种输出方式
+    if (!g_cfg.shotActionBar && !g_cfg.shotSaveFile && !g_cfg.shotCopyClip)
     {
         g_st.errPopup = "截图的两种输出方式（存盘 / 复制到剪贴板）都已关闭，请在截屏页开启至少一种";
         return;
     }
     if (g_shotPhase != ShotPhase::None)
         return;   // 上一次框选还没结束（理论上不会，框选是模态的）
+
+    // 识别结果窗也是置顶窗口：进框选前必须收起来，否则会出现在冻结帧里
+    CloseOcrResultWindow();
 
     // 托盘/最小化状态下窗口本就不可见，画面里没有本程序窗口，可直接截
     g_shotRestoreWin = IsWindowVisible(g_hwnd) && !IsIconic(g_hwnd);
@@ -274,7 +282,7 @@ static void DoShot()
     }
 
     SnipSelection sel;
-    bool ok = RunSnipping(GetModuleHandleW(nullptr), img, sel, true);
+    const bool ok = RunSnipping(GetModuleHandleW(nullptr), img, sel, true, g_cfg.shotActionBar);
     RestoreWindowAfterShot();
     if (!ok)
     {
@@ -291,6 +299,14 @@ static void DoShot()
         return;
     }
     img = std::move(cropped);
+
+    const SnipAction action = sel.action;
+    // 快捷操作栏的「复制」「分享」本身就以剪贴板为载体，即使自动复制开关关闭也必须复制；
+    // 「文字识别」只按开关决定要不要顺带把图片放进剪贴板
+    const bool wantCopy = g_cfg.shotCopyClip ||
+                          action == SnipAction::Copy ||
+                          action == SnipAction::ShareWeChat ||
+                          action == SnipAction::ShareQQ;
 
     bool saved = false, copied = false;
     const int fmt = g_cfg.shotFormat;
@@ -314,10 +330,10 @@ static void DoShot()
                             " 失败，请检查目录权限";
         }
     }
-    if (g_cfg.shotCopyClip)
+    if (wantCopy)
         copied = CopyToClipboard(img);
 
-    // 保留像素供"再次复制"与缩略图显示
+    // 保留像素供"再次复制"、缩略图显示与文字识别
     g_st.lastShot = std::move(img);
     g_st.shotW = g_st.lastShot.w;
     g_st.shotH = g_st.lastShot.h;
@@ -328,17 +344,74 @@ static void DoShot()
     if (!saved)
         g_st.shotPath.clear();
 
-    if (saved && copied)
-        g_st.SetToast(L"已保存 " + fmtName + L" 并复制到剪贴板");
-    else if (saved)
-        g_st.SetToast(L"已保存 " + fmtName + L": " + EllipsizePath(g_st.shotPath, 40));
-    else if (copied)
-        g_st.SetToast(L"已复制到剪贴板");
-    else
-        g_st.SetToast(L"截图失败，请查看日志");
+    if (action == SnipAction::None)
+    {
+        // 快捷操作栏关闭：保持原有「松手即存盘/复制」的行为与提示
+        if (saved && copied)
+            g_st.SetToast(L"已保存 " + fmtName + L" 并复制到剪贴板");
+        else if (saved)
+            g_st.SetToast(L"已保存 " + fmtName + L": " + EllipsizePath(g_st.shotPath, 40));
+        else if (copied)
+            g_st.SetToast(L"已复制到剪贴板");
+        else
+            g_st.SetToast(L"截图失败，请查看日志");
+    }
+    else if (action == SnipAction::Copy)
+    {
+        if (copied)
+        {
+            if (saved)
+                g_st.SetToast(L"已保存 " + fmtName + L" 并复制到剪贴板");
+            else
+                g_st.SetToast(L"已复制到剪贴板");
+        }
+        else
+        {
+            g_st.errPopup = "复制到剪贴板失败";
+        }
+    }
+    else if (action == SnipAction::Ocr)
+    {
+        if (OcrBusy())
+        {
+            g_st.SetToast(L"上一次文字识别还在进行，请稍候");
+        }
+        else
+        {
+            // 先出结果窗并显示进度，识别完成后由主循环回填
+            ShowOcrResultWindow(g_hwnd, L"正在识别文字…", true, false);
+            if (!StartOcr(g_st.lastShot))
+            {
+                SetOcrResultWindowText(L"启动文字识别失败，请查看日志", false, false);
+                LOG_ERR(L"文字识别: 启动失败");
+            }
+        }
+    }
+    else if (action == SnipAction::ShareWeChat || action == SnipAction::ShareQQ)
+    {
+        const bool weChat = (action == SnipAction::ShareWeChat);
+        const wchar_t* appName = weChat ? L"微信" : L"QQ";
+        if (!copied)
+        {
+            g_st.errPopup = "复制到剪贴板失败，无法分享";
+        }
+        else if (ActivateShareApp(weChat ? ShareApp::WeChat : ShareApp::QQ))
+        {
+            wchar_t msg[160];
+            swprintf_s(msg, L"图片已复制，请在%s中按 Ctrl+V 发送", appName);
+            g_st.SetToast(msg);
+        }
+        else
+        {
+            wchar_t msg[200];
+            swprintf_s(msg, L"图片已复制，但未能唤起%s，请手动打开后粘贴", appName);
+            g_st.SetToast(msg);
+        }
+    }
 
-    LOG_INFO(L"截图完成: %ux%u, 格式=%hs, 存盘=%d, 剪贴板=%d", g_st.lastShot.w, g_st.lastShot.h,
-             ShotFormatShortName(fmt), saved ? 1 : 0, copied ? 1 : 0);   // %hs = char*
+    LOG_INFO(L"截图完成: %ux%u, 格式=%hs, 存盘=%d, 剪贴板=%d, 动作=%d",
+             g_st.lastShot.w, g_st.lastShot.h, ShotFormatShortName(fmt),
+             saved ? 1 : 0, copied ? 1 : 0, (int)action);
 }
 
 // ---------------------------------------------------------------------------
@@ -392,7 +465,7 @@ static bool PickRecordRegion()
         return false;
     }
     SnipSelection sel;
-    const bool ok = RunSnipping(GetModuleHandleW(nullptr), img, sel, false);
+    const bool ok = RunSnipping(GetModuleHandleW(nullptr), img, sel, false, false);
     RestoreWindowAfterRegion();
     if (!ok)
     {
@@ -410,6 +483,9 @@ static bool PickRecordRegion()
 static void RequestStartRecording()
 {
     g_recCropValid = false;
+    // 区域框选同样会隐藏主窗口并抓冻结帧：先收起识别结果窗，避免它被拍进去
+    if (g_cfg.captureSource == CapRegion)
+        CloseOcrResultWindow();
     if (g_cfg.captureSource == CapRegion &&
         IsWindowVisible(g_hwnd) && !IsIconic(g_hwnd))
     {
@@ -448,6 +524,8 @@ static void StartRecording()
 {
     if (g_st.IsBusy())
         return;
+    // 识别结果窗是置顶窗口，录屏会把它一起录进去；开始录制前统一收起
+    CloseOcrResultWindow();
     LOG_INFO(L"用户请求开始录制");
 
     Microsoft::WRL::ComPtr<ID3D11Texture2D> tex;
@@ -1593,6 +1671,40 @@ int WINAPI wWinMain(
                 lastDiskTick = now;
         }
 
+        // ---- 文字识别结果 ----
+        // OCR 在工作线程跑，主循环只做非阻塞轮询；结果窗已关闭时退化为 Toast/弹窗
+        {
+            OcrOutcome ocr;
+            if (PollOcr(ocr))
+            {
+                if (ocr.ok)
+                {
+                    const bool hasText = !ocr.text.empty();
+                    const std::wstring shown = hasText ? ocr.text : L"未识别到文字";
+                    if (OcrResultWindowVisible())
+                    {
+                        SetOcrResultWindowText(shown, false, hasText);
+                    }
+                    else
+                    {
+                        // 识别期间结果窗可能被新截图/录制或用户自己关掉。
+                        // 识别是用户显式发起的，结果不能只留一句 Toast，
+                        // 窗口不在了就重新弹出来，保证文字有可见载体
+                        ShowOcrResultWindow(g_hwnd, shown, false, hasText);
+                        g_st.SetToast(hasText ? L"文字识别完成" : L"未识别到文字");
+                    }
+                }
+                else if (OcrResultWindowVisible())
+                {
+                    SetOcrResultWindowText(ocr.error, false, false);
+                }
+                else
+                {
+                    g_st.errPopup = WideToUtf8Str(ocr.error);
+                }
+            }
+        }
+
         // ---- UI 帧 ----
         // 设备已丢失时跳过整段渲染：死设备上绘制无意义，且 ImGui DX11 后端
         // 在 Map 失败时的行为不保证；保存流程（帧末 Finalize）照常推进
@@ -1617,6 +1729,9 @@ int WINAPI wWinMain(
 
     // ---- 清理 ----
     LOG_INFO(L"消息循环结束, 开始清理资源");
+    // 识别结果窗不归主窗口所有，必须显式销毁；工作线程在退出前收尾
+    CloseOcrResultWindow();
+    ShutdownOcr();
     // 异步保存线程兜底（正常退出时保存早已完成，此处 join 立即返回）
     if (g_saveThread.joinable())
         g_saveThread.join();

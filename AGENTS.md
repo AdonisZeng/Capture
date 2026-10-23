@@ -314,6 +314,29 @@ Visual Studio 装在 **D 盘**，所以 `where msbuild` / `where cl` 一律找�
 
 ## 变更记录（只记功能级变更，小修不记）
 
+- 2026-10-22 截图快捷操作栏 + 文字识别 + 分享（Debug/Release × Win32/x64 编译通过，
+  审查修复后 x64 Release 再次构建通过；`Windows.Media.Ocr` 的 zh-Hans 引擎、
+  SoftwareBitmap 像素写入与 `shotActionBar` JSON 往返均已用独立小程序实测）：
+  - **快捷操作栏**：框选松手后遮罩不关闭，在选区右下角显示「复制 / 文字识别 / 分享 / ×」；
+    贴屏幕底部时自动翻到选区上方，分享展开「微信 / QQ」子菜单。点任一动作才按
+    「保存为文件」「复制到剪贴板」开关执行输出；× / Esc / 右键丢弃，不保存、不复制。
+  - **延迟输出**：`RunSnipping` 新增 `actionBar` 参数与 `SnipAction` 返回值；
+    `DoShot` 把原来的即时保存/复制改为按动作分发。复制/分享即使自动复制开关关闭
+    也必须写剪贴板（否则功能无从谈起）；文字识别只按开关顺带复制图片。
+  - **文字识别**：新增 `src/ocr/`，走系统 `Windows.Media.Ocr`（离线、无第三方库），
+    工作线程识别 + 主循环 `PollOcr` 轮询；结果用独立置顶小窗展示（只读多行文本、
+    复制文字、关闭），窗口随新截图收起。中文语言包缺失时给出安装指引。
+  - **分享**：新增 `src/core/share.h/.cpp`，复制图片后按进程名找微信/QQ 窗口并置前；
+    未运行则按 App Paths（WeChat.exe / Weixin.exe / QQ.exe）或 `weixin://` / `tencent://`
+    拉起。只做到「复制 + 唤起」，不自动选好友、不自动发送。
+  - **配置**：新增 `shotActionBar`（默认 true，`settings.json` 中的 `shotActionBar`）；
+    关闭后恢复旧的「松手即保存/复制」流程。截屏页双输出全关的拦截改为
+    仅在快捷操作栏关闭时生效。
+  - 踩坑：`SoftwareBitmap::LockBuffer` 返回的 `BitmapBuffer` 与
+    `IMemoryBufferReference` 必须都释放（`Close()` + `buffer = nullptr`），
+    否则 `RecognizeAsync` 报 `WINCODEC_ERR_ALREADYLOCKED (0x88982F0D)`；
+    SDK 的 `IMemoryBufferByteAccess` 在 `winrt/MemoryBuffer.h`（`#include <MemoryBuffer.h>`）。
+
 - 2026-10-22 区域截图支持窗口识别（Debug/Release × Win32/x64 四配置重建通过）：
   - 遮罩打开即识别光标下窗口并高亮（还原亮度 + 边框 + 「窗口 W × H」标签），
     鼠标移动实时切换目标；单击（位移 ≤6px）直接截取高亮窗口，桌面空白处单击仍截整屏。

@@ -113,9 +113,17 @@ void DrawCapturePage(const UiContext& ctx)
         SaveSettings(cfg);
     if (ToggleRow("shot_clip", "复制到剪贴板", &cfg.shotCopyClip))
         SaveSettings(cfg);
-    // 双输出全关是可达的死局，必须当场说明后果而不是静默无反应
+    if (ToggleRow("shot_actionbar", "截图后显示快捷操作栏", &cfg.shotActionBar))
+        SaveSettings(cfg);
+    // 双输出全关是可达的死局，必须当场说明后果而不是静默无反应；
+    // 快捷操作栏开启时仍可通过栏内按钮显式复制/识别/分享
     if (!cfg.shotSaveFile && !cfg.shotCopyClip)
-        HintTextColored("两种输出都已关闭，截图不会产生任何结果", Pal::Warning());
+    {
+        if (cfg.shotActionBar)
+            HintTextColored("不会自动存盘/复制，但快捷操作栏里的按钮仍可用", Pal::Warning());
+        else
+            HintTextColored("两种输出都已关闭，截图不会产生任何结果", Pal::Warning());
+    }
 
     ImGui::EndChild();
     PopCardStyle();

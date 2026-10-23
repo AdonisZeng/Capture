@@ -350,6 +350,7 @@ bool LoadSettings(Settings& s)
             else if (key == "hwEncode")      s.hwEncode     = (val == "true");
             else if (key == "shotSaveFile")  s.shotSaveFile = (val == "true");
             else if (key == "shotCopyClip")  s.shotCopyClip = (val == "true");
+            else if (key == "shotActionBar") s.shotActionBar = (val == "true");
             else if (key == "darkMode")      s.darkMode     = (val == "true");
             else if (key == "autoStart")     s.autoStart    = (val == "true");
             else if (key == "updateAutoCheck") s.updateAutoCheck = (val == "true");
@@ -406,6 +407,7 @@ bool SaveSettings(const Settings& s)
     fprintf(f, "  \"openFolderAfterRec\": %s,\n", s.openFolderAfterRec ? "true" : "false");
     fprintf(f, "  \"shotSaveFile\": %s,\n",     s.shotSaveFile ? "true" : "false");
     fprintf(f, "  \"shotCopyClip\": %s,\n",     s.shotCopyClip ? "true" : "false");
+    fprintf(f, "  \"shotActionBar\": %s,\n",    s.shotActionBar ? "true" : "false");
     fprintf(f, "  \"shotFormat\": %d,\n",       s.shotFormat);
     fprintf(f, "  \"lastPage\": %d,\n",         s.lastPage);
     fprintf(f, "  \"autoStart\": %s,\n",        s.autoStart ? "true" : "false");

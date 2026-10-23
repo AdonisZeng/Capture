@@ -45,6 +45,16 @@ constexpr COLORREF kOffscreenBg = RGB(14, 16, 20);
 constexpr COLORREF kAccent  = RGB(52, 102, 252);   // 与 UI 主题 Accent 同色
 constexpr COLORREF kLabelBg = RGB(16, 18, 22);
 
+// 快捷操作栏（尺寸均按 96dpi 书写，绘制时按 c.dpi 缩放）
+constexpr int kBarPad     = 10;
+constexpr int kBarGap     = 6;
+constexpr int kBarBtnH    = 36;
+constexpr int kBarMargin  = 10;
+constexpr int kBarRadius  = 8;
+constexpr COLORREF kBarBg     = RGB(24, 27, 34);
+constexpr COLORREF kBarBorder = RGB(62, 68, 82);
+constexpr COLORREF kBarBtnBg  = RGB(40, 44, 54);
+
 struct SnipCtx
 {
     HWND  hwnd = nullptr;
@@ -76,6 +86,23 @@ struct SnipCtx
     RECT  clickRect{};              // 按下瞬间的高亮窗口矩形
     POINT ptDown{}, ptNow{};
     RECT  sel{};
+
+    // ---- 快捷操作栏 ----
+    // 松手后不立即结束：保留遮罩与选区，在选区右下角显示一排按钮，
+    // 用户点按钮才返回对应动作（× = 取消）。区域录制不启用。
+    bool actionBar = false;
+    bool confirmed = false;          // 选区已确认，正在操作快捷栏
+    SnipAction action = SnipAction::None;
+    bool shareOpen = false;          // “分享”子菜单是否展开
+    int  barHover  = -1;             // 当前悬停按钮（-1 = 无）
+    struct BarLayout
+    {
+        RECT panel{};
+        RECT copy{}, ocr{}, share{}, close{};
+        RECT sharePanel{};
+        RECT wechat{}, qq{};
+        bool valid = false;
+    } bar;
 
     bool done = false;
     bool canceled = false;
@@ -322,6 +349,270 @@ void DrawAccentBorder(HDC dc, const RECT& r)
     DeleteObject(pen);
 }
 
+// ---------------------------------------------------------------------------
+// 快捷操作栏（松手后浮在选区右下角）
+// ---------------------------------------------------------------------------
+enum BarHit
+{
+    BarNone = -1,
+    BarCopy = 0,
+    BarOcr,
+    BarShare,
+    BarClose,
+    BarWeChat,
+    BarQQ,
+};
+
+int BarScale(const SnipCtx& c, int v)
+{
+    return MulDiv(v, c.dpi, 96);
+}
+
+int MeasureBarText(SnipCtx& c, const wchar_t* text)
+{
+    if (!c.hdcWork || !c.hFont)
+        return 0;
+    HGDIOBJ oldFont = SelectObject(c.hdcWork, c.hFont);
+    RECT tr{};
+    DrawTextW(c.hdcWork, text, -1, &tr, DT_CALCRECT | DT_SINGLELINE);
+    SelectObject(c.hdcWork, oldFont);
+    return tr.right - tr.left;
+}
+
+void LayoutActionBar(SnipCtx& c)
+{
+    c.bar.valid = false;
+    if (!c.hdcWork)
+        return;   // 字体创建失败时仍按最小宽度布局，保证工具栏可点
+
+    const int pad    = BarScale(c, kBarPad);
+    const int gap    = BarScale(c, kBarGap);
+    const int btnH   = BarScale(c, kBarBtnH);
+    const int margin = BarScale(c, kBarMargin);
+    const int monR   = c.monX + c.monW;
+    const int monB   = c.monY + c.monH;
+
+    auto textW = [&](const wchar_t* s) { return MeasureBarText(c, s); };
+    auto btnW  = [&](const wchar_t* s, int minW) {
+        const int w = textW(s) + pad * 2;
+        return w < minW ? minW : w;
+    };
+
+    const int wCopy  = btnW(L"复制",     BarScale(c, 56));
+    const int wOcr   = btnW(L"文字识别", BarScale(c, 84));
+    const int wShare = btnW(L"分享",     BarScale(c, 56));
+    const int wClose = btnW(L"×",        BarScale(c, 36));
+    const int barW   = pad * 2 + wCopy + gap + wOcr + gap + wShare + gap + wClose;
+    const int barH   = pad * 2 + btnH;
+
+    // 锚点：拖拽/窗口选区用选区本身；整屏截图用主显示器矩形
+    RECT anchor{ c.monX, c.monY, c.monX + c.monW, c.monY + c.monH };
+    if (!c.full)
+        anchor = c.sel;
+
+    int x = anchor.right - barW - margin;
+    int y = anchor.bottom + margin;
+    if (y + barH > monB - margin)
+    {
+        const int above = anchor.top - barH - margin;
+        y = (above >= c.monY + margin) ? above : (monB - margin - barH);
+    }
+    if (y < c.monY + margin)
+        y = c.monY + margin;
+    const int minX = c.monX + margin;
+    const int maxX = monR - margin - barW;
+    // 左右都要夹：锚点取选区右边缘，靠左的小选区会把整个工具栏推到显示器外
+    x = ClampI(x, minX, maxX < minX ? minX : maxX);
+
+    c.bar.panel = RECT{ x, y, x + barW, y + barH };
+    int bx = x + pad;
+    c.bar.copy  = RECT{ bx, y + pad, bx + wCopy, y + pad + btnH }; bx += wCopy + gap;
+    c.bar.ocr   = RECT{ bx, y + pad, bx + wOcr,  y + pad + btnH }; bx += wOcr + gap;
+    c.bar.share = RECT{ bx, y + pad, bx + wShare, y + pad + btnH }; bx += wShare + gap;
+    c.bar.close = RECT{ bx, y + pad, bx + wClose, y + pad + btnH };
+
+    // “分享”子菜单：展开时与分享按钮左对齐，下方放不下就翻到上方
+    const int wWx   = btnW(L"微信", BarScale(c, 52));
+    const int wQq   = btnW(L"QQ",   BarScale(c, 52));
+    const int subW  = pad * 2 + wWx + gap + wQq;
+    const int subH  = pad * 2 + btnH;
+    int sx = c.bar.share.left;
+    if (sx + subW > monR - margin)
+        sx = monR - margin - subW;
+    if (sx < minX)
+        sx = minX;
+    int sy = c.bar.panel.bottom + gap;
+    if (sy + subH > monB - margin)
+        sy = c.bar.panel.top - gap - subH;
+    if (sy < c.monY + margin)
+        sy = c.monY + margin;
+    c.bar.sharePanel = RECT{ sx, sy, sx + subW, sy + subH };
+    c.bar.wechat = RECT{ sx + pad, sy + pad, sx + pad + wWx, sy + pad + btnH };
+    c.bar.qq     = RECT{ sx + pad + wWx + gap, sy + pad,
+                         sx + pad + wWx + gap + wQq, sy + pad + btnH };
+    c.bar.valid = true;
+}
+
+void DrawRoundPanel(HDC dc, const RECT& r, int radius, COLORREF fill, COLORREF border)
+{
+    HBRUSH br = CreateSolidBrush(fill);
+    HPEN   pen = CreatePen(PS_SOLID, 1, border);
+    HGDIOBJ oldBr  = SelectObject(dc, br);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    RoundRect(dc, r.left, r.top, r.right, r.bottom, radius, radius);
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBr);
+    DeleteObject(pen);
+    DeleteObject(br);
+}
+
+void DrawBarButton(SnipCtx& c, HDC dc, const RECT& r, const wchar_t* text, bool hovered)
+{
+    DrawRoundPanel(dc, r, BarScale(c, 6),
+                   hovered ? kAccent : kBarBtnBg,
+                   hovered ? kAccent : RGB(58, 64, 78));
+    HGDIOBJ oldFont = c.hFont ? SelectObject(dc, c.hFont) : nullptr;
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, RGB(240, 242, 246));
+    RECT tr = r;
+    DrawTextW(dc, text, -1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    if (oldFont)
+        SelectObject(dc, oldFont);
+}
+
+void DrawActionBar(SnipCtx& c, HDC dc)
+{
+    LayoutActionBar(c);
+    if (!c.bar.valid)
+        return;
+
+    DrawRoundPanel(dc, c.bar.panel, BarScale(c, kBarRadius), kBarBg, kBarBorder);
+    DrawBarButton(c, dc, c.bar.copy,  L"复制",     c.barHover == BarCopy);
+    DrawBarButton(c, dc, c.bar.ocr,   L"文字识别", c.barHover == BarOcr);
+    DrawBarButton(c, dc, c.bar.share, L"分享",     c.barHover == BarShare || c.shareOpen);
+    DrawBarButton(c, dc, c.bar.close, L"×",        c.barHover == BarClose);
+
+    if (c.shareOpen)
+    {
+        DrawRoundPanel(dc, c.bar.sharePanel, BarScale(c, kBarRadius), kBarBg, kBarBorder);
+        DrawBarButton(c, dc, c.bar.wechat, L"微信", c.barHover == BarWeChat);
+        DrawBarButton(c, dc, c.bar.qq,     L"QQ",   c.barHover == BarQQ);
+    }
+}
+
+int HitActionBar(const SnipCtx& c, POINT pt)
+{
+    if (!c.bar.valid)
+        return BarNone;
+    if (PtInRect(&c.bar.copy, pt))  return BarCopy;
+    if (PtInRect(&c.bar.ocr, pt))   return BarOcr;
+    if (PtInRect(&c.bar.share, pt)) return BarShare;
+    if (PtInRect(&c.bar.close, pt)) return BarClose;
+    if (c.shareOpen)
+    {
+        if (PtInRect(&c.bar.wechat, pt)) return BarWeChat;
+        if (PtInRect(&c.bar.qq, pt))     return BarQQ;
+    }
+    return BarNone;
+}
+
+bool UpdateBarHover(SnipCtx& c, POINT pt)
+{
+    const int hit = HitActionBar(c, pt);
+    if (hit == c.barHover)
+        return false;
+    c.barHover = hit;
+    return true;
+}
+
+void Compose(SnipCtx& c);   // 定义在下方；点击“分享”展开子菜单后需要立即重绘
+
+// 结束一次拖拽/单击：确定选区，然后按是否启用快捷操作栏决定立即返回还是停在操作栏。
+// 鼠标松开与（快捷操作栏模式下的）回车确认共用，避免两条入口出现行为差异。
+void FinishSelection(SnipCtx& c)
+{
+    c.dragging = false;
+    const int dx = c.ptNow.x - c.ptDown.x;
+    const int dy = c.ptNow.y - c.ptDown.y;
+    const bool tiny = (dx < 0 ? -dx : dx) <= kClickSlopPx &&
+                      (dy < 0 ? -dy : dy) <= kClickSlopPx;
+    if (tiny)
+    {
+        // Ctrl+单击 = 截整屏；否则截按下时高亮的窗口；无高亮窗口（桌面空白）也截整屏
+        if (c.pickWindow && !c.ctrlDown && c.clickHadHover)
+        {
+            c.sel    = c.clickRect;
+            c.hasSel = true;
+            c.full   = false;
+        }
+        else
+        {
+            c.hasSel = false;
+            c.full   = true;
+        }
+    }
+    else
+    {
+        UpdateSel(c);
+        c.hasSel = true;
+        c.full   = false;
+    }
+
+    if (c.actionBar)
+    {
+        // 松手后保留遮罩与选区，改为显示快捷操作栏。
+        // 整屏也把选区设为整个主显示器，这样画面恢复原亮度、工具栏有明确锚点。
+        if (c.full)
+        {
+            c.sel = RECT{ c.monX, c.monY, c.monX + c.monW, c.monY + c.monH };
+            c.hasSel = true;
+        }
+        c.confirmed = true;
+        c.hasHover  = false;
+        c.shareOpen = false;
+        c.barHover  = BarNone;
+        Compose(c);
+    }
+    else
+    {
+        c.done = true;
+    }
+}
+
+void HandleBarClick(SnipCtx& c, int hit)
+{
+    switch (hit)
+    {
+    case BarCopy:
+        c.action = SnipAction::Copy;
+        c.done   = true;
+        break;
+    case BarOcr:
+        c.action = SnipAction::Ocr;
+        c.done   = true;
+        break;
+    case BarShare:
+        c.shareOpen = !c.shareOpen;
+        c.barHover  = BarShare;
+        Compose(c);
+        break;
+    case BarWeChat:
+        c.action = SnipAction::ShareWeChat;
+        c.done   = true;
+        break;
+    case BarQQ:
+        c.action = SnipAction::ShareQQ;
+        c.done   = true;
+        break;
+    case BarClose:
+        c.canceled = true;
+        c.done     = true;
+        break;
+    default:
+        break;
+    }
+}
+
 void Compose(SnipCtx& c)
 {
     HDC dc = c.hdcWork;
@@ -361,7 +652,9 @@ void Compose(SnipCtx& c)
             ly = (s.bottom + 8 * c.dpi / 96);
         DrawTextBox(dc, c.hFont, text, s.left, ly, c);
 
-        // 6) 放大镜：光标附近 8 倍像素，便于把边框对齐到窗口边缘
+        // 6) 放大镜：光标附近 8 倍像素，便于把边框对齐到窗口边缘。
+        // 选区确认后不再需要，且快捷操作栏会占用光标附近的空间
+        if (!c.confirmed)
         {
             const int scale = c.dpi / 96;
             const int magPx = 144 * (scale > 0 ? scale : 1);
@@ -423,6 +716,10 @@ void Compose(SnipCtx& c)
         DrawTextBox(dc, c.hFont, c.pickWindow ? kHintText : kHintTextLegacy,
                     0, c.monY + kHintTop * c.dpi / 96, c, true);
     }
+
+    // 7) 快捷操作栏：画在选区/整屏的最上层，命中测试与绘制使用同一份矩形
+    if (c.confirmed && c.actionBar)
+        DrawActionBar(c, dc);
 
     POINT ptSrc{ 0, 0 };
     SIZE  winSize{ c.winW, c.winH };
@@ -496,6 +793,23 @@ LRESULT CALLBACK SnipProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     switch (msg)
     {
     case WM_LBUTTONDOWN:
+        if (c->confirmed)
+        {
+            const POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            const int hit = HitActionBar(*c, pt);
+            if (hit != BarNone)
+            {
+                HandleBarClick(*c, hit);
+            }
+            else if (c->shareOpen)
+            {
+                // 点工具栏外面只收起分享子菜单，不取消截图（避免误触丢失结果）
+                c->shareOpen = false;
+                c->barHover  = BarNone;
+                Compose(*c);
+            }
+            return 0;
+        }
         SetCapture(hWnd);
         c->dragging         = true;
         c->hasSel           = false;
@@ -514,6 +828,12 @@ LRESULT CALLBACK SnipProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_MOUSEMOVE:
     {
         const POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (c->confirmed)
+        {
+            if (UpdateBarHover(*c, pt))
+                Compose(*c);
+            return 0;
+        }
         if (c->dragging)
         {
             if (!c->movedBeyondSlop)
@@ -543,39 +863,15 @@ LRESULT CALLBACK SnipProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_LBUTTONUP:
     {
+        if (c->confirmed)
+            return 0;
         if (!c->dragging)
             return 0;
         ReleaseCapture();
-        c->dragging = false;
         c->ptNow = POINT{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        const int dx = c->ptNow.x - c->ptDown.x;
-        const int dy = c->ptNow.y - c->ptDown.y;
         // 最终结果只由「松开时的位移」决定：拖出去又拖回来仍算单击，
         // 否则会退化成 1~2px 的窄条（movedBeyondSlop 只负责拖动中的视觉切换）
-        const bool tiny = (dx < 0 ? -dx : dx) <= kClickSlopPx &&
-                          (dy < 0 ? -dy : dy) <= kClickSlopPx;
-        if (tiny)
-        {
-            // Ctrl+单击 = 截整屏；否则截按下时高亮的窗口；无高亮窗口（桌面空白）也截整屏
-            if (c->pickWindow && !c->ctrlDown && c->clickHadHover)
-            {
-                c->sel    = c->clickRect;
-                c->hasSel = true;
-                c->full   = false;
-            }
-            else
-            {
-                c->hasSel = false;
-                c->full   = true;
-            }
-        }
-        else
-        {
-            UpdateSel(*c);
-            c->hasSel = true;
-            c->full   = false;
-        }
-        c->done = true;
+        FinishSelection(*c);
         return 0;
     }
 
@@ -598,6 +894,16 @@ LRESULT CALLBACK SnipProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             c->done = true;
             return 0;
         }
+        if (c->confirmed)
+        {
+            // 操作栏显示后：回车 = 复制（最常用），方向键不再调整已确认的选区
+            if (wParam == VK_RETURN)
+            {
+                c->action = SnipAction::Copy;
+                c->done   = true;
+            }
+            return 0;
+        }
         // 方向键微调选区角点（Shift 步进 10px），回车直接确认
         if (c->dragging || c->hasSel)
         {
@@ -610,7 +916,14 @@ LRESULT CALLBACK SnipProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             case VK_UP:    c->ptNow.y -= step; moved = true; break;
             case VK_DOWN:  c->ptNow.y += step; moved = true; break;
             case VK_RETURN:
-                if (c->hasSel && !c->dragging)
+                if (c->actionBar)
+                {
+                    // 快捷操作栏模式：回车与松开鼠标同义，先确认选区再显示操作栏
+                    if (c->dragging)
+                        ReleaseCapture();
+                    FinishSelection(*c);
+                }
+                else if (c->hasSel && !c->dragging)
                 {
                     c->full = false;
                     c->done = true;
@@ -643,6 +956,22 @@ LRESULT CALLBACK SnipProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             }
         }
         return 0;
+
+    case WM_SETCURSOR:
+        if (LOWORD(lParam) == HTCLIENT && c->confirmed)
+        {
+            POINT pt{};
+            if (GetCursorPos(&pt))
+            {
+                ScreenToClient(hWnd, &pt);
+                if (HitActionBar(*c, pt) != BarNone)
+                {
+                    SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                    return TRUE;
+                }
+            }
+        }
+        break;
 
     case WM_IME_SETCONTEXT:
     case WM_IME_NOTIFY:
@@ -691,7 +1020,8 @@ void ReleaseGdi(SnipCtx& c)
 // ---------------------------------------------------------------------------
 // 对外入口
 // ---------------------------------------------------------------------------
-bool RunSnipping(HINSTANCE hinst, const ImageBGRA& frame, SnipSelection& out, bool windowPick)
+bool RunSnipping(HINSTANCE hinst, const ImageBGRA& frame, SnipSelection& out,
+                 bool windowPick, bool actionBar)
 {
     out = SnipSelection{};
     if (!frame.Valid())
@@ -767,6 +1097,7 @@ bool RunSnipping(HINSTANCE hinst, const ImageBGRA& frame, SnipSelection& out, bo
     c.frameW     = frame.w;
     c.frameH     = frame.h;
     c.pickWindow = windowPick;
+    c.actionBar  = actionBar;
     // 主显示器矩形换算到窗口坐标系：单显示器时为 (0,0,winW,winH)，与原逻辑等价
     c.monX   = mon.left - vx;
     c.monY   = mon.top  - vy;
@@ -884,6 +1215,7 @@ bool RunSnipping(HINSTANCE hinst, const ImageBGRA& frame, SnipSelection& out, bo
 
     out.ok = true;
     out.fullScreen = c.full;
+    out.action = c.action;
     if (c.full)
         out.px = RECT{ 0, 0, (LONG)c.frameW, (LONG)c.frameH };
     else

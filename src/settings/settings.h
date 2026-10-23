@@ -66,6 +66,7 @@ struct Settings
     std::wstring shotPattern    = L"截图_{date}_{time}";
     bool         shotSaveFile   = true;  // 存盘
     bool         shotCopyClip   = true;  // 复制到剪贴板
+    bool         shotActionBar  = true;  // 框选松手后显示快捷操作栏（复制/文字识别/分享/取消）
     int          shotFormat     = ShotFormatPng;   // 保存格式：ShotFormat
 
     // ---- 快捷键 ----
