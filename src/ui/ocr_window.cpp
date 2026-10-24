@@ -15,6 +15,9 @@ constexpr int kIdEdit  = 1001;
 constexpr int kIdCopy  = 1002;
 constexpr int kIdClose = 1003;
 constexpr UINT_PTR kCopyFeedbackTimer = 1;
+// 窗口与编辑框共用同一个背景色：WM_CTLCOLOR 返回的画刷必须与 SetBkColor 一致，
+// 否则只读编辑框会在文字背后露出另一种颜色的矩形
+constexpr COLORREF kBgColor = RGB(24, 27, 34);
 
 HWND   g_hwnd = nullptr;
 HWND   g_edit = nullptr;
@@ -133,8 +136,11 @@ LRESULT CALLBACK EditKeyProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
 {
     if (msg == WM_KEYDOWN && wParam == VK_ESCAPE)
     {
+        // 不能在子控件的子类过程里同步销毁父窗口：本消息仍在该子控件的
+        // 窗口过程栈上，父窗/子控件被释放后继续走消息分发属于悬空句柄操作。
+        // 改为异步关闭，让父窗口在自己的消息循环里执行 WM_CLOSE。
         if (IsWindow(g_hwnd))
-            DestroyWindow(g_hwnd);
+            PostMessageW(g_hwnd, WM_CLOSE, 0, 0);
         return 0;
     }
     return DefSubclassProc(hwnd, msg, wParam, lParam);
@@ -183,7 +189,7 @@ LRESULT CALLBACK ResultProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         HDC dc = (HDC)wParam;
         SetTextColor(dc, RGB(232, 234, 238));
-        SetBkColor(dc, RGB(30, 33, 40));
+        SetBkColor(dc, kBgColor);
         return (LRESULT)(g_bgBrush ? g_bgBrush : (HBRUSH)GetStockObject(BLACK_BRUSH));
     }
 
@@ -289,7 +295,7 @@ void ShowOcrResultWindow(HWND owner, const std::wstring& text, bool busy, bool c
         return;
     }
     if (!g_bgBrush)
-        g_bgBrush = CreateSolidBrush(RGB(24, 27, 34));
+        g_bgBrush = CreateSolidBrush(kBgColor);
 
     HDC ref = GetDC(nullptr);
     g_dpi = GetDeviceCaps(ref, LOGPIXELSY);

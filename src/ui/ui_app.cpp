@@ -1002,11 +1002,24 @@ void UiApp::DrawErrorPopup()
     AppState& st = *st_;
     if (!st.errPopup.empty())
         ImGui::OpenPopup("错误");
+
+    // 错误文案可能很长（OCR 语言包安装指引、带 HRESULT 的系统英文错误），
+    // AlwaysAutoResize + TextUnformatted 会按最长一行把弹窗横向撑出屏幕。
+    // 限制宽度并让正文自动换行，弹窗高度仍随内容自适应。
+    const ImGuiIO& io = ImGui::GetIO();
+    float maxW = io.DisplaySize.x - 40.0f;
+    if (maxW > 640.0f)
+        maxW = 640.0f;
+    if (maxW < 240.0f)
+        maxW = 240.0f;
+    const float minW = maxW > 360.0f ? 360.0f : maxW;
+    ImGui::SetNextWindowSizeConstraints(ImVec2(minW, 0.0f), ImVec2(maxW, 100000.0f));
+
     if (ImGui::BeginPopupModal("错误", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
         // 正文带语义色，使弹窗性质一眼可辨
         ImGui::PushStyleColor(ImGuiCol_Text, Pal::Danger());
-        ImGui::TextUnformatted(st.errPopup.c_str());
+        ImGui::TextWrapped("%s", st.errPopup.c_str());
         ImGui::PopStyleColor();
         ImGui::Dummy(ImVec2(0.0f, Space::Md));
         ImGui::Separator();

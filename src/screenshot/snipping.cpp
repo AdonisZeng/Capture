@@ -35,6 +35,9 @@ const wchar_t   kSnipClass[] = L"CaptureSnipClass";
 const wchar_t   kHintText[]  = L"移动鼠标选中窗口 · 单击截取窗口 · Ctrl+单击截整屏 · 按住左键拖出区域 · 方向键微调(Shift=10px) · 回车确认 · Esc 取消";
 // 区域录制等不启用窗口识别的场景保持原行为：单击截全屏
 const wchar_t   kHintTextLegacy[] = L"按住左键拖出区域 · 单击截全屏 · 方向键微调(Shift=10px) · 回车确认 · Esc 取消";
+// 选区确认、快捷操作栏出现后：遮罩仍覆盖全屏，必须给出明确出口与键位，
+// 否则用户容易以为程序卡住（此时上一条操作说明已被选区内容覆盖）
+const wchar_t   kHintTextConfirm[] = L"选择下方操作：复制 / 文字识别 / 分享 · 回车 = 复制 · Esc = 取消";
 
 // Esc 兜底轮询定时器：遮罩失焦后 WM_KEYDOWN 收不到 Esc，靠它保证任何焦点状态下都能取消
 constexpr UINT_PTR kEscTimerId = 1;
@@ -716,6 +719,12 @@ void Compose(SnipCtx& c)
         DrawTextBox(dc, c.hFont, c.pickWindow ? kHintText : kHintTextLegacy,
                     0, c.monY + kHintTop * c.dpi / 96, c, true);
     }
+
+    // 选区确认后顶部操作说明不再走上面的 else 分支（hasSel = true），
+    // 而操作栏只有按钮文字；补一条与当前键位对应的提示，避免用户卡在模态遮罩里
+    if (c.confirmed && c.actionBar)
+        DrawTextBox(dc, c.hFont, kHintTextConfirm,
+                    0, c.monY + kHintTop * c.dpi / 96, c, true);
 
     // 7) 快捷操作栏：画在选区/整屏的最上层，命中测试与绘制使用同一份矩形
     if (c.confirmed && c.actionBar)

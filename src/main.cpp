@@ -309,6 +309,7 @@ static void DoShot()
                           action == SnipAction::ShareQQ;
 
     bool saved = false, copied = false;
+    bool saveFailed = false;
     const int fmt = g_cfg.shotFormat;
     const std::wstring fmtName = Utf8ToWide(ShotFormatShortName(fmt));
     if (g_cfg.shotSaveFile)
@@ -325,13 +326,17 @@ static void DoShot()
         }
         else
         {
-            // errPopup 是 UTF-8 的 std::string（与 ImGui 文本一致），不要走 Utf8ToWide
-            g_st.errPopup = std::string("保存 ") + ShotFormatShortName(fmt) +
-                            " 失败，请检查目录权限";
+            // 存盘错误延迟到分支末尾统一汇总：先写 errPopup 会被后面的
+            // 「复制失败」无条件覆盖，用户只能看到后一条
+            saveFailed = true;
         }
     }
     if (wantCopy)
         copied = CopyToClipboard(img);
+
+    // errPopup 是 UTF-8 的 std::string（与 ImGui 文本一致），不要走 Utf8ToWide
+    const std::string saveError = std::string("保存 ") + ShotFormatShortName(fmt) +
+                                  " 失败，请检查目录权限";
 
     // 保留像素供"再次复制"、缩略图显示与文字识别
     g_st.lastShot = std::move(img);
@@ -354,7 +359,7 @@ static void DoShot()
         else if (copied)
             g_st.SetToast(L"已复制到剪贴板");
         else
-            g_st.SetToast(L"截图失败，请查看日志");
+            g_st.errPopup = saveFailed ? saveError : std::string("截图失败，请查看日志");
     }
     else if (action == SnipAction::Copy)
     {
@@ -367,11 +372,19 @@ static void DoShot()
         }
         else
         {
-            g_st.errPopup = "复制到剪贴板失败";
+            // 两个输出都失败时一次说清；只写「复制失败」会把存盘错误盖掉
+            g_st.errPopup = saveFailed ? saveError + "\n复制到剪贴板失败"
+                                       : std::string("复制到剪贴板失败");
         }
     }
     else if (action == SnipAction::Ocr)
     {
+        // 识别分支同样要把存盘结果带给用户，不能只关心 OCR 本身
+        if (saveFailed)
+            g_st.errPopup = saveError;
+        else if (saved)
+            g_st.SetToast(L"已保存 " + fmtName + L"，正在识别文字…");
+
         if (OcrBusy())
         {
             g_st.SetToast(L"上一次文字识别还在进行，请稍候");
@@ -393,19 +406,32 @@ static void DoShot()
         const wchar_t* appName = weChat ? L"微信" : L"QQ";
         if (!copied)
         {
-            g_st.errPopup = "复制到剪贴板失败，无法分享";
-        }
-        else if (ActivateShareApp(weChat ? ShareApp::WeChat : ShareApp::QQ))
-        {
-            wchar_t msg[160];
-            swprintf_s(msg, L"图片已复制，请在%s中按 Ctrl+V 发送", appName);
-            g_st.SetToast(msg);
+            g_st.errPopup = saveFailed ? saveError + "\n复制到剪贴板失败，无法分享"
+                                       : std::string("复制到剪贴板失败，无法分享");
         }
         else
         {
-            wchar_t msg[200];
-            swprintf_s(msg, L"图片已复制，但未能唤起%s，请手动打开后粘贴", appName);
-            g_st.SetToast(msg);
+            // 分享的主链路是剪贴板，存盘失败也必须明确告知（否则只剩一句
+            // 「图片已复制」，用户会以为文件也存好了）
+            if (saveFailed)
+                g_st.errPopup = saveError;
+
+            if (ActivateShareApp(weChat ? ShareApp::WeChat : ShareApp::QQ))
+            {
+                wchar_t msg[200];
+                swprintf_s(msg, saved
+                                   ? L"图片已保存并复制，请在%s中按 Ctrl+V 发送"
+                                   : L"图片已复制，请在%s中按 Ctrl+V 发送", appName);
+                g_st.SetToast(msg);
+            }
+            else
+            {
+                wchar_t msg[240];
+                swprintf_s(msg, saved
+                                   ? L"图片已保存并复制，但未能唤起%s，请手动打开后粘贴"
+                                   : L"图片已复制，但未能唤起%s，请手动打开后粘贴", appName);
+                g_st.SetToast(msg);
+            }
         }
     }
 
@@ -1687,10 +1713,9 @@ int WINAPI wWinMain(
                     }
                     else
                     {
-                        // 识别期间结果窗可能被新截图/录制或用户自己关掉。
-                        // 识别是用户显式发起的，结果不能只留一句 Toast，
-                        // 窗口不在了就重新弹出来，保证文字有可见载体
-                        ShowOcrResultWindow(g_hwnd, shown, false, hasText);
+                        // 识别期间结果窗已被关闭（用户主动关闭，或新截图前
+                        // BeginShot 收起）。尊重这个意图，不再自动弹回抢焦点，
+                        // 结果用 Toast 告知，避免覆盖用户的显式关闭动作
                         g_st.SetToast(hasText ? L"文字识别完成" : L"未识别到文字");
                     }
                 }
