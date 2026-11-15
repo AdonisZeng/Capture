@@ -23,6 +23,7 @@
 #include "audio/mixer.h"
 #include "screenshot/screenshot.h"
 #include "screenshot/snipping.h"
+#include "screenshot/annotate.h"
 #include "settings/settings.h"
 #include "core/log.h"
 #include "core/util.h"
@@ -283,10 +284,10 @@ static void DoShot()
 
     SnipSelection sel;
     const bool ok = RunSnipping(GetModuleHandleW(nullptr), img, sel, true, g_cfg.shotActionBar);
-    RestoreWindowAfterShot();
     if (!ok)
     {
         // 取消是用户主动选择，给一次可见反馈，否则会以为程序没反应
+        RestoreWindowAfterShot();
         g_st.SetToast(L"已取消截图");
         return;
     }
@@ -294,6 +295,7 @@ static void DoShot()
     ImageBGRA cropped;
     if (!CropImage(img, sel.px, cropped))
     {
+        RestoreWindowAfterShot();
         g_st.errPopup = "截图区域无效，请重新框选";
         LOG_ERR(L"截图失败: 裁剪区域无效");
         return;
@@ -301,6 +303,34 @@ static void DoShot()
     img = std::move(cropped);
 
     const SnipAction action = sel.action;
+
+    // 标注：裁剪之后、输出之前插入编辑环节。主窗口此时仍保持隐藏，
+    // 否则会先闪一下主界面再被标注窗口盖住（恢复统一放到标注结束后）
+    if (action == SnipAction::Annotate)
+    {
+        AnnotateStyle style{ g_cfg.shotAnnotTool, g_cfg.shotAnnotColor, g_cfg.shotAnnotWidth };
+        ImageBGRA edited;
+        if (!RunAnnotator(GetModuleHandleW(nullptr), img, edited, style))
+        {
+            RestoreWindowAfterShot();
+            g_st.SetToast(L"已取消截图");
+            LOG_INFO(L"标注: 用户取消");
+            return;
+        }
+
+        const bool styleChanged = style.tool  != g_cfg.shotAnnotTool
+                               || style.color != g_cfg.shotAnnotColor
+                               || style.width != g_cfg.shotAnnotWidth;
+        g_cfg.shotAnnotTool  = style.tool;
+        g_cfg.shotAnnotColor = style.color;
+        g_cfg.shotAnnotWidth = style.width;
+        if (styleChanged)
+            SaveSettings(g_cfg);
+
+        img = std::move(edited);
+    }
+
+    RestoreWindowAfterShot();
     // 快捷操作栏的「复制」「分享」本身就以剪贴板为载体，即使自动复制开关关闭也必须复制；
     // 「文字识别」只按开关决定要不要顺带把图片放进剪贴板
     const bool wantCopy = g_cfg.shotCopyClip ||
@@ -433,6 +463,21 @@ static void DoShot()
                 g_st.SetToast(msg);
             }
         }
+    }
+    else if (action == SnipAction::Annotate)
+    {
+        // 标注后的输出去向完全跟随两个开关（不像「复制」按钮那样强制复制）。
+        // 都关掉时用户会白画一场，必须明确说出来，而不是静默无结果
+        if (!g_cfg.shotSaveFile && !g_cfg.shotCopyClip)
+            g_st.SetToast(L"标注完成，但「保存为文件」与「复制到剪贴板」都已关闭，结果未输出");
+        else if (saved && copied)
+            g_st.SetToast(L"已保存 " + fmtName + L" 并复制到剪贴板");
+        else if (saved)
+            g_st.SetToast(L"已保存 " + fmtName + L": " + EllipsizePath(g_st.shotPath, 40));
+        else if (copied)
+            g_st.SetToast(L"已复制到剪贴板");
+        else
+            g_st.errPopup = saveFailed ? saveError : std::string("截图失败，请查看日志");
     }
 
     LOG_INFO(L"截图完成: %ux%u, 格式=%hs, 存盘=%d, 剪贴板=%d, 动作=%d",

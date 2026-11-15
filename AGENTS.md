@@ -34,6 +34,7 @@ Windows 桌面录屏应用：捕获主显示器画面 + 可选的系统声音/�
 | `src/capture/capture.h/.cpp` | `ScreenCapture`：WGC 捕获封装（`StartForMonitor`/`StartForWindow` + 内部共用的 `StartWithItem`），工作线程回调输出最新帧 BGRA 纹理 + 100ns 时间戳；`EnumerateMonitors/FindMonitor/EnumerateWindows` 供画面来源选择器使用 |
 | `src/screenshot/screenshot.h/.cpp` | `GrabLatestFrame`（纹理→CPU BGRA）/ `CropImage`（按像素矩形裁剪）/ `SaveImage`（WIC，PNG·JPEG·BMP·TIFF·GIF）/ 格式表（`ShotFormatExt`·`ShotFormatLabel`·`StripImageExtension`）/ `CopyToClipboard`（CF_DIB） |
 | `src/screenshot/snipping.h/.cpp` | `RunSnipping`：全屏置顶分层窗口遮罩，冻结帧上拖拽框选；可选的窗口识别（悬停高亮 + 单击截窗口），Esc/右键取消 |
+| `src/screenshot/annotate.h/.cpp` | `RunAnnotator`：标注编辑器（GDI+ 绘制）。矩形/椭圆/直线/箭头/画笔/高亮笔，8 固定色 + 5 档线宽，操作列表 + 20 步撤销/重做/清空；输入裁剪后的 `ImageBGRA`，输出同尺寸标注图 |
 | `src/recorder/recorder.h/.cpp` | `Recorder`：MF SinkWriter 封装，码率/硬件加速/音频码率可配；视频走系统内存路径，GPU 回读为立即上下文拷贝 + 双暂存错帧阻塞 Map；`WriteVideoFrame`/`WriteAudio`/`Stop`（Finalize 可能阻塞数秒）/`ReleaseDeviceResources` |
 | `src/audio/audio.h/.cpp` | `AudioCapture`：WASAPI 采集封装（`AudioRole::System` 走 eRender+LOOPBACK，`AudioRole::Mic` 走 eCapture），`Open`/`Start`/`Stop` 三段式，设备 ID 可指定（空 = 默认），输出恒为 48kHz/双声道/16bit（float、单声道源自动转换）；`EnumerateAudioDevices` 供设备选择器使用 |
 | `src/audio/mixer.h/.cpp` | `AudioMixer`：系统声音 + 麦克风双路按时间戳对齐后相加（各路增益 + 硬限幅），窗口内缺失数据填静音；两路都开时才用，单路直接透传 |
@@ -180,6 +181,22 @@ Windows 桌面录屏应用：捕获主显示器画面 + 可选的系统声音/�
   缩略图 SRV → WGC 重启 → 继续。注意 `Graphics::Init` 与 `Recorder::Init` 都会清各自的
   `deviceLost_`；设备丢失期间主循环跳过整段 UI 渲染（ImGui DX11 后端在死设备上
   Map 失败的行为不保证）。恢复失败（重建设备失败）才弹窗退出。
+- **`gdiplus.h` 在 `WIN32_LEAN_AND_MEAN` 下必须先 `#include <objidl.h>`**：
+  windows.h 被精简后不含 OLE 头，gdiplus 的 `GdiplusMetafile.h`/`GdiplusBitmap.h`
+  会因 `IStream` 未声明报出一百多个连带错误（C2065/C2146/C2447），看起来像 GDI+ 本身坏了。
+  另外 `Pen::GetColor` 是 **out 参数**形式（`GetColor(Color*)`），
+  `Graphics::DrawLine` 传 `LONG` 会在 `INT` / `REAL` 两个重载间报 C2668 不明确，需显式 `(INT)`。
+- **任何新的全屏置顶窗口都必须 `ImmAssociateContext(hwnd, nullptr)`**：
+  标注窗口加上之前，取焦点会让豆包输入法 `tsf-oime-core.dll` 在 TSF 侧崩掉整个进程
+  （事件查看器 `0xc0000005`，程序日志停在窗口显示之后无后续）。框选遮罩早已这么做，
+  新窗口漏掉就复现；标注窗口本身不需要文字输入。仅缓解，根治要等输入法侧修。
+- **通过 HDC 往 32bpp DIB 上做 GDI/GDI+ 合成后，必须把 alpha 字节强制置 255**：
+  这些绘制路径不保证写 alpha，一旦被写成 0，存 PNG 会整张透明，而剪贴板 CF_DIB
+  根本不看 alpha —— 表现为「复制正常、保存全透明」，极易误判成 WIC 编码器的问题。
+- **模态子窗口的消息循环不能 `PostQuitMessage`**：退出标志一旦留在主线程队列，
+  主循环下一次 `GetMessage` 立刻返回 0，整个程序跟着退出。正确做法与框选遮罩一致：
+  `WM_DESTROY` 直接 return、循环用 `while (!done) { PeekMessage ... }`、
+  只派发 `msg.hwnd == 本窗口` 的消息（否则热键/托盘消息会重入截图流程）。
 
 ## 版本管理与自动更新
 
@@ -312,7 +329,54 @@ Visual Studio 装在 **D 盘**，所以 `where msbuild` / `where cl` 一律找�
   `windowPick=false`（区域录制）保持原行为：单击=整屏、拖拽=选区。Esc / 右键取消。
   遮罩的消息循环只分发遮罩窗口自身的消息，避免热键/托盘消息重入（WM_QUIT 必须放行）。
 
+### 标注编辑（`annotate.cpp`）
+
+- `DoShot` 的顺序：`RunSnipping` → `CropImage` → **若动作为 `Annotate` 则 `RunAnnotator`** → 存盘/复制。
+  主窗口的 `RestoreWindowAfterShot` 推迟到标注结束之后，否则会先闪一下主界面再被标注窗口盖住。
+- 标注窗口是独立的全屏 `WS_POPUP | WS_EX_TOPMOST | WS_EX_TOOLWINDOW` 普通窗口（非分层窗口），
+  **四层 DIB**：`hdcSrc` 原图 → `hdcBase` 原图 + 已提交图形（图像坐标）→
+  `hdcStill` 整屏静态层（深色底 + 缩放后的 base + 图片描边）→
+  `hdcScreen` 最终显示层（still + 拖拽预览 + 工具栏 + 提示）。
+- **拖动预览必须是脏区增量，不能整图重合成**（第一版就是这么写的，实测卡到一帧一帧）：
+  每次鼠标移动把 2560×1440 的 base 全图 Blt 一遍、再做一次整屏 HALFTONE 缩放、
+  `WM_PAINT` 里再贴一次全屏，单帧 25~40ms。现形态：只恢复"上一帧预览占用的矩形"
+  （`previewDirty` ∪ 新脏区，从 `hdcStill` 拷回），用世界变换把预览直接画到 `hdcScreen`，
+  `WM_PAINT` 只贴 `ps.rcPaint`。实测长箭头 0.33ms/帧（600×500 图）、0.86ms/帧（2560×1440 全屏）。
+- 预览用 `Graphics::TranslateTransform + ScaleTransform` 画在显示层，坐标仍是图像坐标、
+  线宽随 `scale` 缩放，因此与最终烧进输出的样子一致；**不需要再维护一层图像尺寸的合成图**。
+- 提交单个图形时只把该图形的图像包围盒区域刷进 `hdcStill`（`UpdateStillRegion`）；
+  只有撤销/重做/清空才整图重建（它们可能改动任意位置）。
+- 悬停工具栏只重画面板区域（`ComposeChrome`），不能走 `ComposeAll`（那会整屏 Blt）。
+- 鼠标消息比 `WM_PAINT` 优先投递，预览后不 `UpdateWindow` 的话画面会肉眼可见地滞后一截。
+- 坐标全部是**图像像素**，缩放只发生在 base → still 那一跳；
+  `ClientToImage` 负责把客户区坐标除 `scale` 并夹在图片内，输出尺寸因此恒等于输入。
+- 线宽按**屏幕显示像素**定义，落到图像时除以 `scale`：大图缩小显示时输出线相应变粗，
+  保证 100% 查看时与编辑时观感一致。高亮笔固定 alpha=90 且宽度至少 14px。
+- 历史用**完整快照**（`snaps` 存 `vector<Op>`），撤销/重做/清空共用一套状态，
+  上限 20 步；超出时丢最旧快照（图形仍在图上，只是不能再撤到那一步）。
+
 ## 变更记录（只记功能级变更，小修不记）
+
+- 2026-11-15 截图标注编辑器（x64 Release 构建通过；本机 2560×1440 / 96dpi 用模拟输入
+  跑完「框选 → 标注 → 完成」全链路实测）：
+  - **入口**：快捷操作栏新增「标注」（顺序变为 复制 / 标注 / 文字识别 / 分享 / ×）。
+    标注与文字识别是互斥的两条去向，选了标注就不再走 OCR。
+  - **编辑器**：新增 `src/screenshot/annotate.h/.cpp`，独立全屏置顶窗口（GDI+ 绘制）。
+    工具为矩形 / 椭圆 / 直线 / 箭头 / 画笔 / 高亮笔；8 个固定颜色（红橙黄绿蓝紫白黑），
+    不做自定义取色；线宽 5 档（2/4/7/11/16 显示像素，按 DPI 缩放）。
+    操作列表 + 快照式历史，撤销/重做各 20 步，另有清空；回车完成、Esc 取消、右键不响应。
+  - **输出**：标注图替换裁剪图后走原有链路，去向完全跟随「保存为文件」「复制到剪贴板」
+    两个开关（不像「复制」按钮那样强制复制）；两者都关时明确提示结果未输出。
+    编辑结果同时成为「上次截图」（缩略图 / 再次复制 / 文字识别都用标注版）。
+  - **配置**：新增 `shotAnnotTool` / `shotAnnotColor` / `shotAnnotWidth`，跨会话记住上次样式。
+  - **实测**：矩形、箭头、椭圆（空心）、画笔、高亮的落笔位置与颜色逐像素核对；
+    Ctrl+Z 撤销后输出只保留前一个图形；2560×1440 全屏截图在缩放显示下
+    标注坐标还原到原图误差 ≤2px；PNG 全部 alpha=255、剪贴板同时有 600×500 图像。
+  - **拖动性能（同日修复）**：第一版每次鼠标移动都做整图 Blt + 整屏 HALFTONE 缩放 +
+    全屏 `WM_PAINT`，实测 25~40ms/帧，用户感知为"一帧一帧"。改为四层 DIB +
+    预览脏区增量 + 按下即画起点圆点（详见「标注编辑」小节），
+    实测 0.33ms/帧（600×500）、0.86ms/帧（2560×1440 缩放显示）。
+  - 踩坑见「重要约定」新增的四条（gdiplus/objidl、IME 解绑、alpha 强制 255、模态循环）。
 
 - 2026-10-22 截图快捷操作栏 + 文字识别 + 分享（Debug/Release × Win32/x64 编译通过，
   审查修复后 x64 Release 再次构建通过；`Windows.Media.Ocr` 的 zh-Hans 引擎、

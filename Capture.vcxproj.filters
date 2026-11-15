@@ -121,6 +121,9 @@
     <ClInclude Include="src\screenshot\snipping.h">
       <Filter>src\screenshot</Filter>
     </ClInclude>
+    <ClInclude Include="src\screenshot\annotate.h">
+      <Filter>src\screenshot</Filter>
+    </ClInclude>
     <ClInclude Include="src\ui\ui_app.h">
       <Filter>src\ui</Filter>
     </ClInclude>
@@ -160,6 +163,9 @@
       <Filter>src\screenshot</Filter>
     </ClCompile>
     <ClCompile Include="src\screenshot\snipping.cpp">
+      <Filter>src\screenshot</Filter>
+    </ClCompile>
+    <ClCompile Include="src\screenshot\annotate.cpp">
       <Filter>src\screenshot</Filter>
     </ClCompile>
     <ClCompile Include="src\ui\ui_app.cpp">

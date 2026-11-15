@@ -66,8 +66,12 @@ struct Settings
     std::wstring shotPattern    = L"截图_{date}_{time}";
     bool         shotSaveFile   = true;  // 存盘
     bool         shotCopyClip   = true;  // 复制到剪贴板
-    bool         shotActionBar  = true;  // 框选松手后显示快捷操作栏（复制/文字识别/分享/取消）
+    bool         shotActionBar  = true;  // 框选松手后显示快捷操作栏（复制/标注/文字识别/分享/取消）
     int          shotFormat     = ShotFormatPng;   // 保存格式：ShotFormat
+    // 标注编辑器上次使用的样式（跨会话保留，取值见 screenshot/annotate.h）
+    int          shotAnnotTool  = 0;     // AnnotateTool
+    int          shotAnnotColor = 0;     // 调色板索引
+    int          shotAnnotWidth = 1;     // 线宽档位索引
 
     // ---- 快捷键 ----
     std::wstring hotkeyCapture  = L"Ctrl+Alt+S";   // 区域截图（占用则回退 Win+Shift+S）

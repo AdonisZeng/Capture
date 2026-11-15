@@ -2,6 +2,7 @@
 #include "core/util.h"
 #include "core/log.h"
 #include "screenshot/screenshot.h"   // ShotFormatExt：预览路径的扩展名与实际编码同源
+#include "screenshot/annotate.h"     // 标注样式的取值范围与界面同源
 #include <windows.h>
 #include <cstdio>
 #include <cstdlib>
@@ -221,6 +222,9 @@ void FillDefaults(Settings& s)
     ClampInt(s.captureSource, 0, CapSourceCount - 1, CapMonitor);
     ClampInt(s.recDelaySec, 0, 30, 0);
     ClampInt(s.shotFormat, 0, ShotFormatCount - 1, ShotFormatPng);
+    ClampInt(s.shotAnnotTool,  0, AnnotateToolCount - 1,      0);
+    ClampInt(s.shotAnnotColor, 0, AnnotateColorCount() - 1,   0);
+    ClampInt(s.shotAnnotWidth, 0, AnnotateWidthCount() - 1,   1);
     ClampInt(s.lastPage, 0, 3, 0);
     ClampInt(s.windowW, 900, 3840, 1080);
     ClampInt(s.windowH, 600, 2160, 700);
@@ -337,6 +341,9 @@ bool LoadSettings(Settings& s)
             else if (key == "recDelaySec")   s.recDelaySec   = atoi(val.c_str());
             else if (key == "lastPage")      s.lastPage     = atoi(val.c_str());
             else if (key == "shotFormat")    s.shotFormat   = atoi(val.c_str());
+            else if (key == "shotAnnotTool")  s.shotAnnotTool  = atoi(val.c_str());
+            else if (key == "shotAnnotColor") s.shotAnnotColor = atoi(val.c_str());
+            else if (key == "shotAnnotWidth") s.shotAnnotWidth = atoi(val.c_str());
             else if (key == "windowW")       s.windowW      = atoi(val.c_str());
             else if (key == "windowH")       s.windowH      = atoi(val.c_str());
             else if (key == "updateLastCheck") s.updateLastCheck = _strtoi64(val.c_str(), nullptr, 10);
@@ -409,6 +416,9 @@ bool SaveSettings(const Settings& s)
     fprintf(f, "  \"shotCopyClip\": %s,\n",     s.shotCopyClip ? "true" : "false");
     fprintf(f, "  \"shotActionBar\": %s,\n",    s.shotActionBar ? "true" : "false");
     fprintf(f, "  \"shotFormat\": %d,\n",       s.shotFormat);
+    fprintf(f, "  \"shotAnnotTool\": %d,\n",    s.shotAnnotTool);
+    fprintf(f, "  \"shotAnnotColor\": %d,\n",   s.shotAnnotColor);
+    fprintf(f, "  \"shotAnnotWidth\": %d,\n",   s.shotAnnotWidth);
     fprintf(f, "  \"lastPage\": %d,\n",         s.lastPage);
     fprintf(f, "  \"autoStart\": %s,\n",        s.autoStart ? "true" : "false");
     fprintf(f, "  \"darkMode\": %s,\n",         s.darkMode ? "true" : "false");

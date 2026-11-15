@@ -37,7 +37,7 @@ const wchar_t   kHintText[]  = L"移动鼠标选中窗口 · 单击截取窗口 
 const wchar_t   kHintTextLegacy[] = L"按住左键拖出区域 · 单击截全屏 · 方向键微调(Shift=10px) · 回车确认 · Esc 取消";
 // 选区确认、快捷操作栏出现后：遮罩仍覆盖全屏，必须给出明确出口与键位，
 // 否则用户容易以为程序卡住（此时上一条操作说明已被选区内容覆盖）
-const wchar_t   kHintTextConfirm[] = L"选择下方操作：复制 / 文字识别 / 分享 · 回车 = 复制 · Esc = 取消";
+const wchar_t   kHintTextConfirm[] = L"选择下方操作：复制 / 标注 / 文字识别 / 分享 · 回车 = 复制 · Esc = 取消";
 
 // Esc 兜底轮询定时器：遮罩失焦后 WM_KEYDOWN 收不到 Esc，靠它保证任何焦点状态下都能取消
 constexpr UINT_PTR kEscTimerId = 1;
@@ -101,7 +101,7 @@ struct SnipCtx
     struct BarLayout
     {
         RECT panel{};
-        RECT copy{}, ocr{}, share{}, close{};
+        RECT copy{}, annotate{}, ocr{}, share{}, close{};
         RECT sharePanel{};
         RECT wechat{}, qq{};
         bool valid = false;
@@ -359,6 +359,7 @@ enum BarHit
 {
     BarNone = -1,
     BarCopy = 0,
+    BarAnnotate,
     BarOcr,
     BarShare,
     BarClose,
@@ -402,10 +403,11 @@ void LayoutActionBar(SnipCtx& c)
     };
 
     const int wCopy  = btnW(L"复制",     BarScale(c, 56));
+    const int wAnnot = btnW(L"标注",     BarScale(c, 56));
     const int wOcr   = btnW(L"文字识别", BarScale(c, 84));
     const int wShare = btnW(L"分享",     BarScale(c, 56));
     const int wClose = btnW(L"×",        BarScale(c, 36));
-    const int barW   = pad * 2 + wCopy + gap + wOcr + gap + wShare + gap + wClose;
+    const int barW   = pad * 2 + wCopy + gap + wAnnot + gap + wOcr + gap + wShare + gap + wClose;
     const int barH   = pad * 2 + btnH;
 
     // 锚点：拖拽/窗口选区用选区本身；整屏截图用主显示器矩形
@@ -429,10 +431,11 @@ void LayoutActionBar(SnipCtx& c)
 
     c.bar.panel = RECT{ x, y, x + barW, y + barH };
     int bx = x + pad;
-    c.bar.copy  = RECT{ bx, y + pad, bx + wCopy, y + pad + btnH }; bx += wCopy + gap;
-    c.bar.ocr   = RECT{ bx, y + pad, bx + wOcr,  y + pad + btnH }; bx += wOcr + gap;
-    c.bar.share = RECT{ bx, y + pad, bx + wShare, y + pad + btnH }; bx += wShare + gap;
-    c.bar.close = RECT{ bx, y + pad, bx + wClose, y + pad + btnH };
+    c.bar.copy     = RECT{ bx, y + pad, bx + wCopy, y + pad + btnH }; bx += wCopy + gap;
+    c.bar.annotate = RECT{ bx, y + pad, bx + wAnnot, y + pad + btnH }; bx += wAnnot + gap;
+    c.bar.ocr      = RECT{ bx, y + pad, bx + wOcr,  y + pad + btnH }; bx += wOcr + gap;
+    c.bar.share    = RECT{ bx, y + pad, bx + wShare, y + pad + btnH }; bx += wShare + gap;
+    c.bar.close    = RECT{ bx, y + pad, bx + wClose, y + pad + btnH };
 
     // “分享”子菜单：展开时与分享按钮左对齐，下方放不下就翻到上方
     const int wWx   = btnW(L"微信", BarScale(c, 52));
@@ -490,10 +493,11 @@ void DrawActionBar(SnipCtx& c, HDC dc)
         return;
 
     DrawRoundPanel(dc, c.bar.panel, BarScale(c, kBarRadius), kBarBg, kBarBorder);
-    DrawBarButton(c, dc, c.bar.copy,  L"复制",     c.barHover == BarCopy);
-    DrawBarButton(c, dc, c.bar.ocr,   L"文字识别", c.barHover == BarOcr);
-    DrawBarButton(c, dc, c.bar.share, L"分享",     c.barHover == BarShare || c.shareOpen);
-    DrawBarButton(c, dc, c.bar.close, L"×",        c.barHover == BarClose);
+    DrawBarButton(c, dc, c.bar.copy,     L"复制",     c.barHover == BarCopy);
+    DrawBarButton(c, dc, c.bar.annotate, L"标注",     c.barHover == BarAnnotate);
+    DrawBarButton(c, dc, c.bar.ocr,      L"文字识别", c.barHover == BarOcr);
+    DrawBarButton(c, dc, c.bar.share,    L"分享",     c.barHover == BarShare || c.shareOpen);
+    DrawBarButton(c, dc, c.bar.close,    L"×",        c.barHover == BarClose);
 
     if (c.shareOpen)
     {
@@ -507,10 +511,11 @@ int HitActionBar(const SnipCtx& c, POINT pt)
 {
     if (!c.bar.valid)
         return BarNone;
-    if (PtInRect(&c.bar.copy, pt))  return BarCopy;
-    if (PtInRect(&c.bar.ocr, pt))   return BarOcr;
-    if (PtInRect(&c.bar.share, pt)) return BarShare;
-    if (PtInRect(&c.bar.close, pt)) return BarClose;
+    if (PtInRect(&c.bar.copy, pt))     return BarCopy;
+    if (PtInRect(&c.bar.annotate, pt)) return BarAnnotate;
+    if (PtInRect(&c.bar.ocr, pt))      return BarOcr;
+    if (PtInRect(&c.bar.share, pt))    return BarShare;
+    if (PtInRect(&c.bar.close, pt))    return BarClose;
     if (c.shareOpen)
     {
         if (PtInRect(&c.bar.wechat, pt)) return BarWeChat;
@@ -588,6 +593,10 @@ void HandleBarClick(SnipCtx& c, int hit)
     {
     case BarCopy:
         c.action = SnipAction::Copy;
+        c.done   = true;
+        break;
+    case BarAnnotate:
+        c.action = SnipAction::Annotate;
         c.done   = true;
         break;
     case BarOcr:

@@ -22,6 +22,7 @@ enum class SnipAction
     Ocr,          // 文字识别
     ShareWeChat,  // 分享到微信
     ShareQQ,      // 分享到 QQ
+    Annotate,     // 进入标注编辑器（与文字识别互斥：两者都是选区确认后的唯一去向）
 };
 
 struct SnipSelection
